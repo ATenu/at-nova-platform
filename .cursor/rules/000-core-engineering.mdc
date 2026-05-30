@@ -1,0 +1,18 @@
+---
+description: Always enforce secure, typed, reusable, minimal, production-grade engineering standards.
+alwaysApply: true
+---
+
+# Core engineering
+
+- Follow `.cursor/skills/secure-production-engineering/SKILL.md`.
+- Prefer simple, typed, reusable, minimal code over verbose or clever code.
+- Inspect existing patterns before creating new ones; reuse over re-implementation.
+- Do not generate code that bypasses security, tests, or architecture rules.
+- Keep the change set as small as the task allows.
+- Before completing a task, self-review against
+  `.cursor/skills/secure-production-engineering/resources/code-review-checklist.md`.
+
+For deeper guidance load:
+`resources/core-engineering-principles.md`, `resources/architecture-and-reuse.md`,
+`resources/anti-patterns.md`.

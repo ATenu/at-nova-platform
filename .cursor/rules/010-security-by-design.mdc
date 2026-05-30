@@ -1,0 +1,17 @@
+---
+description: Always enforce secure-by-design, default-deny, centralized authn/authz standards.
+alwaysApply: true
+---
+
+# Security by design
+
+- Default deny. Fail closed when policy is missing or ambiguous.
+- No backend route without centralized authentication and authorization unless explicitly marked public in the typed route registry.
+- No ad hoc / route-level permission checks. Use centralized typed permissions and scopes.
+- No secrets or PII leakage in logs, errors, traces, prompts, or Langfuse metadata.
+- Validate all trust boundaries at runtime (HTTP, queue, agent, file, env).
+- Never rely on frontend authorization as a security control.
+- Never decode JWTs without full validation for authorization decisions.
+
+For deeper guidance load:
+`resources/security-by-design.md` and `resources/auth-keycloak-rbac.md`.

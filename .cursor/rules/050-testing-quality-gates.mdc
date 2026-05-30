@@ -1,0 +1,25 @@
+---
+description: Require tests for security-sensitive and business-critical behavior, and quality gates before completion.
+globs:
+  - "**/*.test.{ts,tsx}"
+  - "**/*.spec.{ts,tsx}"
+  - "**/test_*.py"
+  - "**/*_test.py"
+  - "**/tests/**/*.{ts,tsx,py}"
+alwaysApply: false
+---
+
+# Testing and quality gates
+
+- Add or update tests before considering a task complete.
+- Every protected route or route group must test: no token (401), invalid token (401),
+  valid token without scope/permission (403), valid token with scope/permission (success),
+  tenant mismatch (403 where relevant), and public-route behavior.
+- Unit test domain logic, validation, permission mapping, and LangGraph nodes.
+- Integration test routes, middleware, repositories, token validation, and graph transitions.
+- Add security regression tests for authz bypass, injection, unsafe HTML, and prompt injection.
+- Tests verify behavior, not implementation details. Avoid shallow mock-only assertions.
+- Run or recommend the repo's exact format/lint/typecheck/test/audit commands; never weaken the gate to pass.
+
+For deeper guidance load:
+`resources/testing-quality-gates.md`.

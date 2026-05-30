@@ -1,0 +1,36 @@
+{
+  "name": "@nova/backend-services",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Nova backend services workspace: shared layer, HTTP API, and DB MCP data-surfacer for A2A agents.",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*",
+    "api",
+    "db-mcp-server"
+  ],
+  "scripts": {
+    "build": "npm run build -w @nova/shared && npm run build -w @nova/database && npm run build -w @nova/api && npm run build -w @nova/db-mcp-server",
+    "build:packages": "npm run build -w @nova/shared && npm run build -w @nova/database",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "npm run test --workspaces --if-present",
+    "db:migrate": "npm run migration:run -w @nova/database",
+    "db:seed": "npm run seed -w @nova/database",
+    "db:init": "npm run db:init -w @nova/database",
+    "dev:api": "npm run dev -w @nova/api"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^22.10.2",
+    "eslint": "^9.17.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1"
+  }
+}

@@ -1,0 +1,25 @@
+---
+description: Enforce backend TypeScript, TypeORM, Keycloak, RBAC, and API standards.
+globs:
+  - "backend-services/**/*.{ts,tsx}"
+  - "mcp-servers/**/*.{ts,tsx}"
+  - "backend/**/*.{ts,tsx}"
+  - "server/**/*.{ts,tsx}"
+  - "api/**/*.{ts,tsx}"
+  - "services/**/*.{ts,tsx}"
+alwaysApply: false
+---
+
+# Backend (Node.js + TypeScript + TypeORM)
+
+- Every route goes through centralized authn/authz unless explicitly public in the typed route registry.
+- Controllers are thin: request/response mapping and error forwarding only. No business logic, DB queries, or Keycloak calls in controllers.
+- Business rules live in services/use cases; they receive typed inputs and an `AuthContext` when authorization-relevant.
+- Validate every body, query, params, and header contract at runtime.
+- Use migrations; never `synchronize: true` in production. Parameterize queries, avoid N+1, paginate lists.
+- Do not return raw TypeORM entities from APIs; map to DTOs.
+- Use typed errors mapped to a consistent API error envelope. Never leak stack traces or ORM errors.
+
+For deeper guidance load:
+`resources/backend-node-typeorm.md`, `resources/auth-keycloak-rbac.md`,
+`resources/database-typeorm-data-access.md`, `resources/api-contracts-and-errors.md`.

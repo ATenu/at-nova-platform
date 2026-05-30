@@ -1,0 +1,44 @@
+{
+  "name": "@nova/database",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared TypeORM data layer: entities, migrations, seeds, and DataSource for all Nova services.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "jest --passWithNoTests",
+    "typeorm": "typeorm-ts-node-commonjs -d src/data-source.ts",
+    "typeorm:prod": "typeorm -d dist/data-source.js",
+    "migration:run": "npm run typeorm -- migration:run",
+    "migration:run:prod": "npm run typeorm:prod -- migration:run",
+    "migration:revert": "npm run typeorm -- migration:revert",
+    "migration:show": "npm run typeorm -- migration:show",
+    "seed": "ts-node src/seeds/seed.ts",
+    "seed:prod": "node dist/seeds/seed.js",
+    "db:init": "npm run migration:run && npm run seed",
+    "db:init:prod": "npm run migration:run:prod && npm run seed:prod"
+  },
+  "dependencies": {
+    "@nova/shared": "*",
+    "pg": "^8.13.1",
+    "reflect-metadata": "^0.2.2",
+    "typeorm": "^0.3.20",
+    "uuid": "^11.0.3"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "@types/uuid": "^10.0.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2"
+  }
+}

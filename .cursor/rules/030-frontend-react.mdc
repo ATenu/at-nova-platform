@@ -1,0 +1,22 @@
+---
+description: Enforce React + TypeScript frontend standards, centralized API client, and safe Keycloak usage.
+globs:
+  - "frontend/**/*.{ts,tsx}"
+  - "web/**/*.{ts,tsx}"
+  - "client/**/*.{ts,tsx}"
+  - "apps/web/**/*.{ts,tsx}"
+alwaysApply: false
+---
+
+# Frontend (React + TypeScript)
+
+- Use strict TypeScript with explicit props types; keep components small and composable.
+- Use a single typed API client. Do not call `fetch`/`axios` directly throughout components.
+- Centralize token attachment, request IDs, error normalization, retries, and timeouts in the client.
+- Use a centralized auth provider/hook for Keycloak; do not scatter token parsing or role checks.
+- UI may hide elements by permission for usability, but the frontend is never a security boundary.
+- Avoid `dangerouslySetInnerHTML`; if unavoidable, sanitize and document why.
+- Do not expose sensitive data in local storage, logs, analytics, or errors.
+
+For deeper guidance load:
+`resources/frontend-react.md` and `resources/api-contracts-and-errors.md`.

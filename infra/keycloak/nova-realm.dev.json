@@ -1,0 +1,127 @@
+{
+  "realm": "nova",
+  "displayName": "Nova",
+  "enabled": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "verifyEmail": false,
+  "sslRequired": "external",
+  "roles": {
+    "realm": [
+      { "name": "admin", "description": "super admin users and system admin" },
+      { "name": "sales-user", "description": "sales team" },
+      { "name": "support-operations-user", "description": "operations team" },
+      { "name": "customer-support", "description": "customer support team" },
+      { "name": "ops-compliance", "description": "compliance team" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "nova-frontend",
+      "name": "Nova Frontend",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:5173/*"],
+      "webOrigins": ["http://localhost:5173"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5173/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "nova-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "nova-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "nova-api",
+      "name": "Nova API",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "nova-api-dev-secret"
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-nova-api",
+      "enabled": true,
+      "serviceAccountClientId": "nova-api",
+      "clientRoles": {
+        "realm-management": ["manage-users", "view-users", "query-users", "view-realm"]
+      }
+    },
+    {
+      "username": "admin@test.com",
+      "email": "admin@test.com",
+      "firstName": "admin",
+      "lastName": "admin",
+      "enabled": true,
+      "emailVerified": true,
+      "realmRoles": ["admin"],
+      "credentials": [{ "type": "password", "value": "ChangeMe123!", "temporary": true }],
+      "requiredActions": ["UPDATE_PASSWORD"]
+    },
+    {
+      "username": "salesman@test.com",
+      "email": "salesman@test.com",
+      "firstName": "sales",
+      "lastName": "man",
+      "enabled": true,
+      "emailVerified": true,
+      "realmRoles": ["sales-user"],
+      "credentials": [{ "type": "password", "value": "ChangeMe123!", "temporary": true }],
+      "requiredActions": ["UPDATE_PASSWORD"]
+    },
+    {
+      "username": "opsman@test.com",
+      "email": "opsman@test.com",
+      "firstName": "ope",
+      "lastName": "man",
+      "enabled": true,
+      "emailVerified": true,
+      "realmRoles": ["support-operations-user"],
+      "credentials": [{ "type": "password", "value": "ChangeMe123!", "temporary": true }],
+      "requiredActions": ["UPDATE_PASSWORD"]
+    },
+    {
+      "username": "compliance@test.com",
+      "email": "compliance@test.com",
+      "firstName": "compliance",
+      "lastName": "ops",
+      "enabled": true,
+      "emailVerified": true,
+      "realmRoles": ["ops-compliance"],
+      "credentials": [{ "type": "password", "value": "ChangeMe123!", "temporary": true }],
+      "requiredActions": ["UPDATE_PASSWORD"]
+    },
+    {
+      "username": "crm@test.com",
+      "email": "crm@test.com",
+      "firstName": "customer",
+      "lastName": "support",
+      "enabled": true,
+      "emailVerified": true,
+      "realmRoles": ["customer-support"],
+      "credentials": [{ "type": "password", "value": "ChangeMe123!", "temporary": true }],
+      "requiredActions": ["UPDATE_PASSWORD"]
+    }
+  ]
+}

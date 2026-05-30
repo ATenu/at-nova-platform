@@ -1,0 +1,23 @@
+---
+description: Enforce typed, safe Python A2A / LangGraph agent standards and Langfuse redaction.
+globs:
+  - "agents/**/*.py"
+  - "**/agents/**/*.py"
+  - "**/langgraph/**/*.py"
+alwaysApply: false
+---
+
+# Python A2A agents (LangGraph)
+
+- Full type hints on public functions, graph state, node I/O, tools, and clients.
+- Define graph state explicitly (Pydantic or `TypedDict`). Keep nodes small, deterministic, and testable.
+- Separate prompt construction, model invocation, tool execution, validation, and state transitions.
+- Validate node outputs and all inbound/outbound agent messages with schemas. Treat other agents as untrusted.
+- Allowlist tools per agent. Sensitive/destructive tools require authorization, auditability, and (by default) human approval.
+- Prevent prompt injection from overriding system/security/authorization instructions; separate instructions from data.
+- Add timeouts and max-iteration guards. Avoid broad `except Exception` and hidden global mutable state.
+- Never put secrets or full PII in prompts, traces, or Langfuse-visible fields; redact before emitting.
+
+For deeper guidance load:
+`resources/python-langgraph-agents.md`, `resources/security-by-design.md`,
+`resources/observability-langfuse.md`.

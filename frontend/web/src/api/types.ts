@@ -1,0 +1,243 @@
+/**
+ * Client-facing domain types. These mirror the backend DTOs (camelCase
+ * properties; money as strings). They intentionally contain no password or
+ * credential fields — authentication is owned by Keycloak, and the application
+ * `users` table holds profile data only.
+ */
+
+export type UUID = string;
+
+export type CustomerIssueStatus = 'in_assistance' | 'rejected' | 'completed';
+export type IssueActionStatus = 'pending' | 'in_progress' | 'completed' | 'rejected';
+export type MessageRole = 'system' | 'user' | 'assistant';
+
+export const CUSTOMER_ISSUE_STATUSES: readonly CustomerIssueStatus[] = [
+  'in_assistance',
+  'rejected',
+  'completed',
+];
+
+export const ISSUE_ACTION_STATUSES: readonly IssueActionStatus[] = [
+  'pending',
+  'in_progress',
+  'completed',
+  'rejected',
+];
+
+/** Standard paginated envelope returned by backend list endpoints. */
+export interface PaginatedResult<T> {
+  readonly items: readonly T[];
+  readonly page: number;
+  readonly pageSize: number;
+  readonly total: number;
+  readonly totalPages: number;
+}
+
+export interface UserDto {
+  readonly id: UUID;
+  readonly email: string;
+  readonly firstName: string;
+  readonly lastName: string;
+  readonly middleName?: string | null;
+  readonly description?: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface RoleDto {
+  readonly name: string;
+  readonly description?: string | null;
+}
+
+export interface PermissionDto {
+  readonly name: string;
+  readonly description?: string | null;
+}
+
+export type KeycloakSyncStatus = 'synced' | 'partial' | 'not_found' | 'error';
+
+export interface AdminUserDto {
+  readonly id: UUID;
+  readonly email: string;
+  readonly firstName: string;
+  readonly lastName: string;
+  readonly middleName?: string | null;
+  readonly description?: string | null;
+  readonly roles: readonly string[];
+  readonly permissions: readonly string[];
+  readonly active: boolean;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly keycloak: {
+    readonly exists: boolean;
+    readonly enabled: boolean;
+    readonly syncedRoles: readonly string[];
+    readonly syncStatus: KeycloakSyncStatus;
+    readonly lastSyncError?: string | null;
+  };
+}
+
+export interface CustomerDto {
+  readonly id: UUID;
+  readonly email: string;
+  readonly fullName: string;
+  readonly firstName: string;
+  readonly lastName: string;
+  readonly age: number | null;
+  readonly active: boolean;
+  readonly salesCount?: number;
+  readonly issuesCount?: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface ProductDto {
+  readonly id: UUID;
+  readonly name: string;
+  readonly description?: string | null;
+  readonly category: string;
+  readonly price: string;
+  readonly inCatalog: boolean;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface ProductSoldDto {
+  readonly saleId: UUID;
+  readonly productId: UUID;
+  readonly quantity: number;
+  readonly product?: ProductDto | undefined;
+}
+
+export interface SaleDto {
+  readonly id: UUID;
+  readonly customerId: UUID;
+  readonly customer?: CustomerDto | undefined;
+  readonly discountApplied?: string | null;
+  readonly date: string;
+  readonly totalAmountReceipt: string;
+  readonly paymentReceived: boolean;
+  readonly dateOfPayment?: string | null;
+  readonly productsSold?: readonly ProductSoldDto[];
+  readonly issuesCount?: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface CustomerIssueDto {
+  readonly id: UUID;
+  readonly salesId: UUID;
+  readonly sale?: SaleDto | undefined;
+  readonly description: string;
+  readonly dateRaised: string;
+  readonly dateLastUpdate: string;
+  readonly status: CustomerIssueStatus;
+  readonly issueActions?: readonly IssueActionDto[];
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface IssueActionDto {
+  readonly id: UUID;
+  readonly issueId: UUID;
+  readonly title: string;
+  readonly description: string;
+  readonly status: IssueActionStatus;
+  readonly updatedById?: UUID | null;
+  readonly updatedAI?: boolean | null;
+  readonly createdDate: string;
+  readonly assignedOwnerId: UUID;
+  readonly assignedOwner?: UserDto;
+  readonly updatedBy?: UserDto | null;
+  readonly comments?: readonly ActionCommentDto[];
+  readonly dependencies?: readonly IssueActionDependencyDto[];
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface IssueActionDependencyDto {
+  readonly actionId: UUID;
+  readonly dependsOnActionId: UUID;
+}
+
+export interface ActionCommentDto {
+  readonly id: UUID;
+  readonly issueActionId: UUID;
+  readonly userId: UUID;
+  readonly user?: UserDto | undefined;
+  readonly comment: string;
+  readonly datetime: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface SopDto {
+  readonly id: UUID;
+  readonly name: string;
+  readonly active: boolean;
+  readonly description: string;
+  readonly latestVersion?: number;
+  readonly details?: readonly SopDetailDto[];
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface SopDetailDto {
+  readonly sopId: UUID;
+  readonly version: number;
+  readonly fullText: string;
+  readonly dateOfCreation: string;
+  readonly createdById: UUID;
+  readonly createdBy?: UserDto | undefined;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface MessageDto {
+  readonly id: UUID;
+  readonly conversationId: UUID;
+  readonly role: MessageRole;
+  readonly text: string;
+  readonly isMCPApps: boolean;
+  readonly MCPAppLink?: string | null;
+  readonly MCPActive?: boolean | null;
+  readonly createdDate: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface ConversationDto {
+  readonly id: UUID;
+  readonly userId: UUID;
+  readonly title?: string;
+  readonly createdDate: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly messages?: readonly MessageDto[];
+}
+
+export type EntityLinkType = 'customer' | 'sale' | 'issue' | 'action' | 'sop';
+
+export interface AgentChatRequest {
+  readonly conversationId?: string;
+  readonly message: string;
+  readonly context?: {
+    readonly currentRoute?: string;
+    readonly selectedEntity?: {
+      readonly type: EntityLinkType;
+      readonly id: string;
+    };
+  };
+}
+
+export interface AgentToolLink {
+  readonly label: string;
+  readonly href: string;
+  readonly type: EntityLinkType | 'external';
+}
+
+export interface AgentChatResponse {
+  readonly conversation: ConversationDto;
+  readonly assistantMessage: MessageDto;
+  readonly toolLinks?: readonly AgentToolLink[];
+}
