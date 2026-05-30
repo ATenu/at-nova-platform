@@ -2,12 +2,12 @@ import { randomUUID } from 'node:crypto';
 import express, { type Express } from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
-import rateLimit from 'express-rate-limit';
 import pinoHttp from 'pino-http';
-import type { Logger } from '@nova/shared';
+import type { Logger, RedisConnection } from '@nova/shared';
 import { ForbiddenError } from '@nova/shared';
 import type { DataSource } from 'typeorm';
 import type { ApiConfig } from './config';
+import { createRateLimiter } from './http/rate-limit';
 import { TokenVerifier } from './auth/token-verifier';
 import { createAuthenticate } from './auth/authenticate';
 import { KeycloakAdminClient } from './auth/keycloak-admin-client';
@@ -47,6 +47,11 @@ export interface AppDependencies {
   readonly config: ApiConfig;
   readonly logger: Logger;
   readonly dataSource: DataSource;
+  /**
+   * Shared cache/rate-limit Redis. `null` (or omitted) falls back to an
+   * in-memory rate-limit store that is not shared across replicas.
+   */
+  readonly cacheRedis?: RedisConnection | null;
 }
 
 function buildCorsOptions(config: ApiConfig): cors.CorsOptions {
@@ -72,7 +77,7 @@ function buildCorsOptions(config: ApiConfig): cors.CorsOptions {
  * pipeline, feature routers, and the single error handler.
  */
 export function createApp(deps: AppDependencies): Express {
-  const { config, logger, dataSource } = deps;
+  const { config, logger, dataSource, cacheRedis = null } = deps;
   const app = express();
 
   app.disable('x-powered-by');
@@ -105,11 +110,12 @@ export function createApp(deps: AppDependencies): Express {
   );
 
   app.use(
-    rateLimit({
+    createRateLimiter({
       windowMs: config.rateLimit.windowMs,
-      limit: config.rateLimit.max,
-      standardHeaders: 'draft-7',
-      legacyHeaders: false,
+      max: config.rateLimit.max,
+      failOpen: config.redis.rateLimitFailOpen,
+      cacheRedis,
+      logger,
     }),
   );
 
@@ -144,7 +150,7 @@ export function createApp(deps: AppDependencies): Express {
   const rbacService = new RbacService(dataSource);
   const chatService = new ChatService(conversationRepository, userRepository, new LocalAgentGateway());
 
-  app.use('/health', createHealthRouter({ dataSource }));
+  app.use('/health', createHealthRouter({ dataSource, cacheRedis }));
   app.use('/api/v1/auth', createMeRouter({ authenticate, users: userRepository }));
   app.use('/api/v1/customers', createCustomerRouter({ authenticate, service: customerService }));
   app.use('/api/v1/products', createProductRouter({ authenticate, service: productService }));

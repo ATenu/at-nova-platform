@@ -1,4 +1,4 @@
-import { booleanFromEnv, csvFromEnv, loadConfig } from '@nova/shared';
+import { booleanFromEnv, csvFromEnv, loadConfig, redisUrlSchema } from '@nova/shared';
 import { z } from 'zod';
 
 /**
@@ -6,29 +6,50 @@ import { z } from 'zod';
  * refuses to boot with invalid configuration. No module reads `process.env`
  * directly.
  */
-const apiEnvSchema = z.object({
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+const apiEnvSchema = z
+  .object({
+    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+    LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 
-  API_PORT: z.coerce.number().int().positive().default(3000),
-  CORS_ALLOWED_ORIGINS: csvFromEnv.default('http://localhost:3000'),
-  API_BODY_LIMIT: z.string().min(1).default('100kb'),
-  API_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
-  API_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(120),
+    API_PORT: z.coerce.number().int().positive().default(3000),
+    CORS_ALLOWED_ORIGINS: csvFromEnv.default('http://localhost:3000'),
+    API_BODY_LIMIT: z.string().min(1).default('100kb'),
+    API_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+    API_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(120),
 
-  KEYCLOAK_ISSUER_URL: z.string().url(),
-  KEYCLOAK_AUDIENCE: csvFromEnv,
-  KEYCLOAK_JWKS_URI: z.string().url().optional(),
+    KEYCLOAK_ISSUER_URL: z.string().url(),
+    KEYCLOAK_AUDIENCE: csvFromEnv,
+    KEYCLOAK_JWKS_URI: z.string().url().optional(),
 
-  // Keycloak Admin REST integration (server-to-server, client_credentials).
-  // Provisioning is enabled only when a client secret is configured.
-  KEYCLOAK_REALM: z.string().min(1).default('nova'),
-  KEYCLOAK_ADMIN_BASE_URL: z.string().url().optional(),
-  KEYCLOAK_API_CLIENT_ID: z.string().min(1).default('nova-api'),
-  KEYCLOAK_API_CLIENT_SECRET: z.string().min(1).optional(),
+    // Keycloak Admin REST integration (server-to-server, client_credentials).
+    // Provisioning is enabled only when a client secret is configured.
+    KEYCLOAK_REALM: z.string().min(1).default('nova'),
+    KEYCLOAK_ADMIN_BASE_URL: z.string().url().optional(),
+    KEYCLOAK_API_CLIENT_ID: z.string().min(1).default('nova-api'),
+    KEYCLOAK_API_CLIENT_SECRET: z.string().min(1).optional(),
 
-  DB_SSL: booleanFromEnv.default('false'),
-});
+    DB_SSL: booleanFromEnv.default('false'),
+
+    // Shared cache / rate-limit Redis (frontend+backend instance). Optional in
+    // dev/test (falls back to an in-memory limiter), required in production so
+    // limits are correct across replicas. Use `rediss://` (TLS) for any managed
+    // endpoint; `redis://` only over a trusted private network.
+    REDIS_CACHE_URL: redisUrlSchema.optional(),
+    // When the rate-limit store is unreachable, allow requests through rather
+    // than 5xx-ing every request. Rate limiting is an availability control, not
+    // an authorization control (authz stays JWT + RBAC), so failing open is the
+    // safe default; set to `false` to fail closed.
+    REDIS_RATE_LIMIT_FAIL_OPEN: booleanFromEnv.default('true'),
+  })
+  .superRefine((env, ctx) => {
+    if (env.NODE_ENV === 'production' && !env.REDIS_CACHE_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['REDIS_CACHE_URL'],
+        message: 'is required in production (shared rate-limit store across replicas)',
+      });
+    }
+  });
 
 export type RawApiConfig = z.infer<typeof apiEnvSchema>;
 
@@ -39,6 +60,15 @@ export interface ApiConfig {
   readonly corsAllowedOrigins: readonly string[];
   readonly bodyLimit: string;
   readonly rateLimit: { readonly windowMs: number; readonly max: number };
+  /**
+   * Redis-backed shared state. `cacheUrl` is `null` when no cache instance is
+   * configured (dev/test), in which case the rate limiter falls back to an
+   * in-memory store that is NOT shared across replicas.
+   */
+  readonly redis: {
+    readonly cacheUrl: string | null;
+    readonly rateLimitFailOpen: boolean;
+  };
   readonly auth: {
     readonly issuerUrl: string;
     readonly audience: readonly string[];
@@ -83,6 +113,10 @@ export function loadApiConfig(): ApiConfig {
     corsAllowedOrigins: env.CORS_ALLOWED_ORIGINS,
     bodyLimit: env.API_BODY_LIMIT,
     rateLimit: { windowMs: env.API_RATE_LIMIT_WINDOW_MS, max: env.API_RATE_LIMIT_MAX },
+    redis: {
+      cacheUrl: env.REDIS_CACHE_URL ?? null,
+      rateLimitFailOpen: env.REDIS_RATE_LIMIT_FAIL_OPEN,
+    },
     auth: {
       issuerUrl: env.KEYCLOAK_ISSUER_URL,
       audience: env.KEYCLOAK_AUDIENCE,

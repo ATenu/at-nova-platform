@@ -1,9 +1,11 @@
 import 'reflect-metadata';
 import type { Server } from 'node:http';
 import { AppDataSource } from '@nova/database';
-import { createLogger } from '@nova/shared';
+import { createLogger, createRedisConnection, type RedisConnection } from '@nova/shared';
 import { createApp } from './app';
 import { loadApiConfig } from './config';
+
+const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 async function bootstrap(): Promise<void> {
   const config = loadApiConfig();
@@ -16,19 +18,54 @@ async function bootstrap(): Promise<void> {
   const dataSource = await AppDataSource.initialize();
   logger.info('database connection established');
 
-  const app = createApp({ config, logger, dataSource });
+  const cacheRedis: RedisConnection | null = config.redis.cacheUrl
+    ? createRedisConnection({
+        url: config.redis.cacheUrl,
+        namespace: 'cache',
+        keyPrefix: 'nova:',
+        logger,
+      })
+    : null;
+
+  const app = createApp({ config, logger, dataSource, cacheRedis });
   const server: Server = app.listen(config.port, () => {
     logger.info({ port: config.port }, 'nova-api listening');
   });
 
+  let shuttingDown = false;
   const shutdown = (signal: string): void => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
     logger.info({ signal }, 'shutting down');
+
+    // Force exit if graceful drain stalls (e.g. a stuck connection), so the
+    // orchestrator's rolling deploy is never blocked indefinitely.
+    const forceExit = setTimeout(() => {
+      logger.error('graceful shutdown timed out; forcing exit');
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
+    forceExit.unref();
+
     server.close(() => {
-      dataSource
-        .destroy()
-        .then(() => process.exit(0))
-        .catch(() => process.exit(1));
+      void (async () => {
+        try {
+          if (cacheRedis) {
+            await cacheRedis.quit();
+          }
+          await dataSource.destroy();
+          clearTimeout(forceExit);
+          process.exit(0);
+        } catch {
+          process.exit(1);
+        }
+      })();
     });
+
+    // Drop idle keep-alive sockets so `server.close` can resolve promptly while
+    // in-flight requests are allowed to finish (until the force-exit deadline).
+    server.closeIdleConnections();
   };
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));

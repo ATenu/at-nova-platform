@@ -45,6 +45,62 @@ services:
       timeout: 5s
       retries: 30
 
+  # Shared cache + cross-replica rate-limit store used by the API (and, later,
+  # frontend session/token caching). Password-protected and never published to
+  # the host. In production, point REDIS_CACHE_URL at a managed TLS endpoint
+  # (rediss://) instead of this container.
+  redis-cache:
+    image: redis:7-alpine
+    container_name: nova-redis-cache
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:-nova_redis_password}
+      - --appendonly
+      - 'yes'
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
+    environment:
+      # redis-cli reads REDISCLI_AUTH automatically, so the healthcheck never
+      # puts the password on the process command line.
+      REDISCLI_AUTH: ${REDIS_PASSWORD:-nova_redis_password}
+    volumes:
+      - nova-redis-cache-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # Reserved store for the future Python A2A agents. Provisioned now so the
+  # topology and credentials exist from the start; no service consumes it yet.
+  # `noeviction` protects agent working state from being silently dropped under
+  # memory pressure (unlike the cache instance, which uses an LRU policy).
+  redis-agent:
+    image: redis:7-alpine
+    container_name: nova-redis-agent
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_AGENT_PASSWORD:-nova_redis_agent_password}
+      - --appendonly
+      - 'yes'
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
+    environment:
+      REDISCLI_AUTH: ${REDIS_AGENT_PASSWORD:-nova_redis_agent_password}
+    volumes:
+      - nova-redis-agent-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
   # One-shot: run migrations then seed, against a healthy database.
   db-init:
     build:
@@ -73,6 +129,8 @@ services:
         condition: service_completed_successfully
       keycloak:
         condition: service_healthy
+      redis-cache:
+        condition: service_healthy
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -81,6 +139,11 @@ services:
       DB_LOGGING: ${DB_LOGGING:-false}
       API_PORT: '3000'
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      # Shared rate-limit/cache store. Local uses redis:// over the internal
+      # Docker network; production should use a managed rediss:// (TLS) endpoint.
+      # If you change REDIS_PASSWORD, set REDIS_CACHE_URL to match.
+      REDIS_CACHE_URL: ${REDIS_CACHE_URL:-redis://:nova_redis_password@redis-cache:6379}
+      REDIS_RATE_LIMIT_FAIL_OPEN: ${REDIS_RATE_LIMIT_FAIL_OPEN:-true}
       # Issuer must match the token `iss` (the browser-facing Keycloak URL), so
       # validation succeeds for tokens minted via http://localhost:8080. The JWKS
       # is fetched over the internal Docker network where `localhost` is not the
@@ -129,3 +192,5 @@ services:
 
 volumes:
   nova-postgres-data:
+  nova-redis-cache-data:
+  nova-redis-agent-data:
