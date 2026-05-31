@@ -1,34 +1,60 @@
-import 'reflect-metadata';
-import { AppDataSource } from '@nova/database';
-import { createLogger } from '@nova/shared';
-import { describeSchema } from './schema/describe-schema';
+import { ServiceTokenClient, createLogger } from '@nova/shared';
+import { loadMcpConfig } from './config';
+import { ResourceServer } from './auth/resource-server';
+import { SnapshotClient } from './auth/snapshot-client';
+import { ReadOnlyDataSource } from './data/readonly-datasource';
+import { createMcpHttpApp } from './server';
 
 /**
- * Data-surfacer entrypoint.
- *
- * This scaffold initializes the shared DataSource and prints the surfaced
- * schema as JSON, proving the read-only data-surfacing core works end to end.
- * To turn this into an MCP server, wrap `describeSchema` and a small set of
- * read-only, parameterized query tools with an MCP SDK transport (see README).
+ * DB MCP server entrypoint. A production, spec-compliant MCP resource server
+ * exposing the data layer as secure, read-only tools over curated `mcp_read`
+ * views. Fails closed: it refuses to boot without valid configuration and the
+ * outbound credential needed to verify entitlement snapshots.
  */
-async function main(): Promise<void> {
+function main(): void {
+  const config = loadMcpConfig();
   const logger = createLogger({
     service: 'nova-db-mcp-server',
-    level: process.env.LOG_LEVEL ?? 'info',
-    environment: process.env.NODE_ENV ?? 'development',
+    level: config.logLevel,
+    environment: config.environment,
   });
 
-  const dataSource = await AppDataSource.initialize();
-  try {
-    const schema = describeSchema(dataSource);
-    logger.info({ tableCount: schema.length }, 'surfaced database schema');
-    console.log(JSON.stringify(schema, null, 2));
-  } finally {
-    await dataSource.destroy();
+  if (!config.controlPlane.clientSecret) {
+    throw new Error('MCP_DATA_CLIENT_SECRET is required to fetch entitlement snapshots.');
   }
+
+  const dataSource = new ReadOnlyDataSource(config.db);
+  const resourceServer = new ResourceServer(config.auth);
+  const tokens = new ServiceTokenClient({
+    tokenUrl: config.controlPlane.tokenUrl,
+    clientId: config.controlPlane.clientId,
+    clientSecret: config.controlPlane.clientSecret,
+    scope: config.controlPlane.audienceScope,
+  });
+  const snapshotClient = new SnapshotClient(tokens, {
+    baseUrl: config.controlPlane.baseUrl,
+    audienceScope: config.controlPlane.audienceScope,
+  });
+
+  const app = createMcpHttpApp({ config, logger, resourceServer, snapshotClient, dataSource });
+
+  const httpServer = app.listen(config.port, () => {
+    logger.info({ port: config.port }, 'nova-db-mcp-server listening');
+  });
+
+  const shutdown = (signal: string): void => {
+    logger.info({ signal }, 'shutting down');
+    httpServer.close(() => {
+      void dataSource.close().finally(() => process.exit(0));
+    });
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-main().catch((error: unknown) => {
-  console.error('nova-db-mcp-server failed:', error instanceof Error ? error.message : error);
+try {
+  main();
+} catch (error: unknown) {
+  console.error('nova-db-mcp-server failed to start:', error instanceof Error ? error.message : error);
   process.exit(1);
-});
+}

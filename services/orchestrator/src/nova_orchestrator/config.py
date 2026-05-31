@@ -37,6 +37,16 @@ def _int(name: str, default: int) -> int:
         raise ConfigError(f"Environment variable {name} must be an integer") from exc
 
 
+def _float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:  # noqa: TRY003
+        raise ConfigError(f"Environment variable {name} must be a number") from exc
+
+
 @dataclass(frozen=True)
 class OrchestratorConfig:
     role: str
@@ -54,6 +64,15 @@ class OrchestratorConfig:
     # Internal MCP tool gateway (Node control plane) the worker calls back into.
     nova_api_internal_url: str
     max_run_steps: int
+    # A2A SQL analyst agent: endpoint + the audience the worker mints tokens for.
+    sql_analyst_agent_url: str
+    sql_analyst_agent_audience: str
+    # LLM (OpenAI) powering the autonomous reasoning/critique/compose nodes.
+    openai_api_key: str
+    llm_model: str
+    llm_temperature: float
+    llm_timeout_s: float
+    openai_base_url: str | None
 
     @property
     def is_worker(self) -> bool:
@@ -86,4 +105,17 @@ def load_config() -> OrchestratorConfig:
         run_time_limit_s=_int("RUN_TIME_LIMIT_S", 7200),
         nova_api_internal_url=_optional("NOVA_API_INTERNAL_URL", "http://nova-api:3000"),
         max_run_steps=_int("MAX_RUN_STEPS", 8),
+        sql_analyst_agent_url=_optional(
+            "SQL_ANALYST_AGENT_URL", "http://at-sql-analyser:8003"
+        ),
+        sql_analyst_agent_audience=_optional(
+            "SQL_ANALYST_AGENT_AUDIENCE", "nova-agent-sql-analyst"
+        ),
+        # Optional at boot (the gateway role does not reason); the worker's LLM
+        # client fails fast if it is missing when reasoning is actually needed.
+        openai_api_key=_optional("OPENAI_API_KEY", ""),
+        llm_model=_optional("LLM_MODEL", "gpt-4o-mini"),
+        llm_temperature=_float("LLM_TEMPERATURE", 0.0),
+        llm_timeout_s=_float("LLM_TIMEOUT_S", 30.0),
+        openai_base_url=os.environ.get("OPENAI_BASE_URL") or None,
     )

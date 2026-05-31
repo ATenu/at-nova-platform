@@ -1,29 +1,65 @@
-# @nova/db-mcp-server — data-surfacer
+# @nova/db-mcp-server
 
-A read-only **data-surfacer** for Nova's A2A agents. It reuses the shared
-`@nova/database` TypeORM layer (entities, `DataSource`) so there is a single
-source of truth for the schema — the MCP server never redefines tables.
+A production, spec-compliant **MCP resource server** that exposes Nova's business
+data layer as secure, **read-only** tools over a curated set of PII-aware views
+(`mcp_read.*`). It is the data plane behind the `at-sql-analyser` agent: the agent
+plans and reasons; this server is the only thing that ever touches the database
+for free-form reads, and it does so under defense-in-depth controls.
 
-## What exists today
+## Security model (default deny at every layer)
 
-- `src/schema/describe-schema.ts` — surfaces tables, columns (types, enums,
-  nullability, keys), relations, and indexes from TypeORM metadata. This is the
-  schema-discovery core agents use to navigate the data correctly.
-- `src/main.ts` — initializes the `DataSource` and prints the surfaced schema as
-  JSON. Run it with `npm run surface-schema -w @nova/db-mcp-server`.
+1. **Inbound auth** (`auth/resource-server.ts`): validates the caller's
+   audience-restricted token (`aud: nova-mcp-data`) and pins the authorized party
+   (`azp: nova-agent-sql-analyst`). A user token or any other service is rejected.
+2. **Entitlement re-enforcement** (`auth/snapshot-client.ts`): fetches the
+   immutable entitlement snapshot for the run (`X-Nova-Run-Id` header) from the
+   control plane, then **recomputes the canonical hash** and checks expiry. It
+   never trusts a snapshot it cannot independently verify.
+3. **Layered capability gate** (`auth/authorize.ts`): tools the caller is not
+   entitled to are never registered (Layer A → `tools/list` reflects entitlement),
+   and each handler re-checks the capability against the shared catalog (Layer B).
+4. **SQL safety** (`sql/validate-select.ts`): the query is parsed with a real
+   parser (libpg_query via `pgsql-parser`) and statically validated — exactly one
+   `SELECT`, allowlisted `mcp_read` relations only, no DML/DDL/utility/transaction
+   statements, no `SELECT INTO`/locking, no dangerous functions.
+5. **Curated views + redaction** (`data/views.ts`, `sql/redact.ts`): the `mcp_read`
+   views exclude/limit PII at the database layer; the redactor masks any
+   PII-classified column on the way out (defense in depth).
+6. **Least privilege at the engine** (`data/readonly-datasource.ts`): connects as
+   the `nova_mcp_readonly` role (SELECT only on `mcp_read`), runs every query in a
+   `READ ONLY` transaction with a `statement_timeout` and the per-session
+   `nova.owner_subject` GUC that drives owner-scoped views.
+7. **Limits** (`sql/limits.ts`): an outer `LIMIT` caps rows; a byte budget caps
+   the serialized result and flags truncation.
+8. **PII-free audit** (`audit/audit.ts`): every decision is logged with a SQL
+   hash, referenced views, row count and duration — never raw SQL, params, or rows.
 
-## Turning this into an MCP server
+## Tools
 
-1. Add an MCP SDK dependency (e.g. `@modelcontextprotocol/sdk`).
-2. Register read-only tools backed by the shared layer:
-   - `describe_schema` → returns `describeSchema(dataSource)`.
-   - `list_<entity>` / `get_<entity>` → typed, **parameterized**, paginated
-     reads via repositories (mirror the API's repository pattern).
-3. Enforce the platform guardrails:
-   - Validate every tool input with a schema (zod).
-   - Allowlist tools; expose **only** read access for surfacing.
-   - Never put secrets/PII in tool responses, prompts, or traces.
-   - Reuse `@nova/shared` RBAC to scope what an agent may surface.
+| Tool               | Capability             | Description                                   |
+| ------------------ | ---------------------- | --------------------------------------------- |
+| `describe_schema`  | `data.schema.describe` | Curated views with columns/types + PII flags. |
+| `list_views`       | `data.schema.describe` | Names + descriptions of allowlisted views.    |
+| `run_select_query` | `data.query.select`    | Validated, capped, redacted read-only SELECT. |
 
-Because connection, entities, and config already live in `@nova/database`,
-standing up the server is just adding the transport and the tool wrappers.
+## Runtime
+
+Built into the shared backend image (`backend-services/Dockerfile`) and run with
+`node db-mcp-server/dist/main.js`. The endpoint is `POST /mcp` (stateless
+Streamable HTTP); `GET /healthz` and `GET /readyz` are for orchestration probes.
+Every MCP request must carry `Authorization: Bearer <token>` and `X-Nova-Run-Id`.
+
+## Configuration
+
+All configuration is environment-driven and validated at startup (`src/config.ts`);
+the process refuses to boot on invalid config. See `.env.example` for the full set.
+The database URL MUST use the `nova_mcp_readonly` role — never the business
+credentials.
+
+## Development
+
+```bash
+npm run build -w @nova/db-mcp-server
+npm run typecheck -w @nova/db-mcp-server
+npm test -w @nova/db-mcp-server
+```

@@ -15,6 +15,7 @@
     "write-sop",
     "read-users",
     "write-users",
+    "read-data",
     "create-agent-run",
     "read-agent-run",
     "cancel-agent-run"
@@ -48,6 +49,7 @@
       "read-actions",
       "write-actions",
       "read-sop",
+      "read-data",
       "create-agent-run",
       "read-agent-run",
       "cancel-agent-run"
@@ -68,6 +70,7 @@
       "write-sop",
       "read-users",
       "write-users",
+      "read-data",
       "create-agent-run",
       "read-agent-run",
       "cancel-agent-run"
@@ -75,6 +78,7 @@
     "ops-compliance": [
       "read-sop",
       "write-sop",
+      "read-data",
       "create-agent-run",
       "read-agent-run",
       "cancel-agent-run"
@@ -164,6 +168,46 @@
       ],
       "risk": "low",
       "resourceScoped": false
+    },
+    {
+      "id": "data.schema.describe",
+      "kind": "mcp-tool",
+      "mode": "read",
+      "requiredPermissions": [
+        "read-data"
+      ],
+      "risk": "low",
+      "resourceScoped": false
+    },
+    {
+      "id": "data.query.select",
+      "kind": "mcp-tool",
+      "mode": "read",
+      "requiredPermissions": [
+        "read-data"
+      ],
+      "risk": "low",
+      "resourceScoped": true
+    },
+    {
+      "id": "data.analyse.read",
+      "kind": "agent-skill",
+      "mode": "read",
+      "requiredPermissions": [
+        "read-data"
+      ],
+      "risk": "low",
+      "resourceScoped": true
+    },
+    {
+      "id": "data.act.write",
+      "kind": "agent-skill",
+      "mode": "write",
+      "requiredPermissions": [
+        "read-data"
+      ],
+      "risk": "high",
+      "resourceScoped": true
     }
   ]
 }

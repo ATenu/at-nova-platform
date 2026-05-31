@@ -1,5 +1,11 @@
-import { createHash } from 'node:crypto';
-import { capabilitiesForPermissions, type Permission, type Role } from '@nova/shared';
+import {
+  capabilitiesForPermissions,
+  computeSnapshotHash,
+  type Permission,
+  type Role,
+} from '@nova/shared';
+
+export { computeSnapshotHash } from '@nova/shared';
 
 /**
  * Immutable authorization snapshot captured at the API edge (the only place the
@@ -41,26 +47,6 @@ export interface BuildEntitlementSnapshotInput {
 
 function sortedUnique(values: readonly string[]): string[] {
   return [...new Set(values)].sort();
-}
-
-/** Compute the canonical snapshot hash. Exported for parity testing. */
-export function computeSnapshotHash(payload: {
-  readonly ownerSubject: string;
-  readonly roles: readonly string[];
-  readonly permissions: readonly string[];
-  readonly capabilityAllowlist: readonly string[];
-  readonly issuedAtEpochS: number;
-  readonly expiresAtEpochS: number;
-}): string {
-  const canonical = JSON.stringify({
-    ownerSubject: payload.ownerSubject,
-    roles: sortedUnique(payload.roles),
-    permissions: sortedUnique(payload.permissions),
-    capabilityAllowlist: sortedUnique(payload.capabilityAllowlist),
-    issuedAtEpochS: payload.issuedAtEpochS,
-    expiresAtEpochS: payload.expiresAtEpochS,
-  });
-  return `sha256:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
 }
 
 /**

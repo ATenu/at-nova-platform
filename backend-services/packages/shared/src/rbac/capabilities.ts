@@ -102,6 +102,52 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     risk: 'low',
     resourceScoped: false,
   },
+  // --- Free-query data layer (DB MCP server + `at-sql-analyser`) -------------
+  // All gated by the single coarse `read-data` permission (decision D1); the
+  // exposed surface is further constrained by the curated `mcp_read` views +
+  // column redaction in the MCP server, not by a permission per view.
+  {
+    id: 'data.schema.describe',
+    kind: 'mcp-tool',
+    mode: 'read',
+    requiredPermissions: ['read-data'],
+    risk: 'low',
+    resourceScoped: false,
+  },
+  {
+    id: 'data.query.select',
+    kind: 'mcp-tool',
+    mode: 'read',
+    requiredPermissions: ['read-data'],
+    risk: 'low',
+    resourceScoped: true,
+  },
+  {
+    id: 'data.analyse.read',
+    kind: 'agent-skill',
+    mode: 'read',
+    requiredPermissions: ['read-data'],
+    risk: 'low',
+    resourceScoped: true,
+  },
+  // `data.act.write` is a DISPATCH skill: it may only invoke already-cataloged
+  // write capabilities (e.g. `sales.create`), each independently gated on its
+  // own domain permission AND the high-risk approval gate, so the agent can
+  // never mint new write authority. It is gated on `read-data` (the data-layer
+  // entitlement that exposes the SQL analyst at all) rather than on a write
+  // permission — and is marked `risk: 'high'`, so dispatching it additionally
+  // requires a recorded human approval. This intentionally keeps the catalog
+  // invariant that every capability declares at least one required permission
+  // (default deny; the plan's "no standalone permission" is realized as "no
+  // standalone *write* permission").
+  {
+    id: 'data.act.write',
+    kind: 'agent-skill',
+    mode: 'write',
+    requiredPermissions: ['read-data'],
+    risk: 'high',
+    resourceScoped: true,
+  },
 ] as const;
 
 const CAPABILITY_BY_ID: ReadonlyMap<string, CapabilityDescriptor> = new Map(

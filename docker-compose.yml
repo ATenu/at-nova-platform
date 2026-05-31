@@ -170,6 +170,11 @@ services:
       DB_SSL: 'false'
       DB_LOGGING: ${DB_LOGGING:-false}
       SEED_RESET: ${SEED_RESET:-false}
+      # Provisions the least-privileged nova_mcp_readonly login password used by
+      # the DB MCP server (McpReadDataSurface migration). The migration fails
+      # closed if this is absent. Rotate for any non-local environment and keep
+      # it in sync with the db-mcp-server's MCP_READONLY_DATABASE_URL below.
+      MCP_READONLY_DB_PASSWORD: ${MCP_READONLY_DB_PASSWORD:-nova_mcp_readonly_password}
     command: ['npm', 'run', 'db:init:prod', '-w', '@nova/database']
     restart: 'no'
 
@@ -252,6 +257,105 @@ services:
       retries: 5
     command: ['node', 'api/dist/main.js']
 
+  # DB MCP server (nova-mcp-data). A spec-compliant MCP resource server exposing
+  # the business data layer as secure, read-only tools over the curated
+  # `mcp_read` views. Connects ONLY as the least-privileged nova_mcp_readonly
+  # role (never the business credentials), validates the inbound agent token
+  # (aud: nova-mcp-data, azp: nova-agent-sql-analyst), and re-enforces the
+  # entitlement snapshot it fetches from the API. Never published to the host.
+  db-mcp-server:
+    build:
+      context: ./backend-services
+      dockerfile: Dockerfile
+    container_name: nova-db-mcp-server
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MCP_DATA_PORT: '8002'
+      # Read-only connection as the curated-views-only role. Keep the password in
+      # sync with MCP_READONLY_DB_PASSWORD supplied to db-init.
+      MCP_READONLY_DATABASE_URL: postgres://nova_mcp_readonly:${MCP_READONLY_DB_PASSWORD:-nova_mcp_readonly_password}@postgres:5432/${POSTGRES_DB:-nova}
+      MCP_READONLY_DB_SSL: 'false'
+      # Inbound auth: this server's audience + the only client allowed to call it.
+      KEYCLOAK_ISSUER_URL: ${KEYCLOAK_ISSUER_URL:-http://localhost:8080/realms/nova}
+      KEYCLOAK_JWKS_URI: ${KEYCLOAK_JWKS_URI:-http://keycloak:8080/realms/nova/protocol/openid-connect/certs}
+      MCP_DATA_AUDIENCE: ${MCP_DATA_AUDIENCE:-nova-mcp-data}
+      MCP_DATA_AUTHORIZED_PARTIES: ${MCP_DATA_AUTHORIZED_PARTIES:-nova-agent-sql-analyst}
+      # Outbound: fetch the verified entitlement snapshot from the control plane,
+      # authenticating as its own confidential client (client_credentials).
+      NOVA_API_INTERNAL_URL: ${NOVA_API_INTERNAL_URL:-http://api:3000}
+      KEYCLOAK_TOKEN_URL: ${KEYCLOAK_TOKEN_URL:-http://keycloak:8080/realms/nova/protocol/openid-connect/token}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-nova}
+      MCP_DATA_CLIENT_ID: ${MCP_DATA_CLIENT_ID:-nova-mcp-data}
+      MCP_DATA_CLIENT_SECRET: ${MCP_DATA_CLIENT_SECRET:-nova-mcp-data-dev-secret}
+      ENTITLEMENT_AUDIENCE_SCOPE: ${ENTITLEMENT_AUDIENCE_SCOPE:-nova-mcp-data}
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:8002/healthz || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: ['node', 'db-mcp-server/dist/main.js']
+
+  # SQL analyst A2A agent (nova-agent-sql-analyst). FastAPI agent that answers
+  # data questions by reading ONLY through the DB MCP server. Validates the
+  # inbound worker token (aud: nova-agent-sql-analyst, azp: nova-celery-worker),
+  # fetches + re-verifies the run's entitlement snapshot from the API, and runs a
+  # bounded, guarded harness. Never connects to any database directly. Not
+  # published to the host (reachable only on the internal network by the worker).
+  at-sql-analyser:
+    build:
+      context: ./agents/at-sql-analyser
+      dockerfile: Dockerfile
+    container_name: nova-agent-sql-analyst
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      db-mcp-server:
+        condition: service_healthy
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      AGENT_PORT: '8003'
+      # Issuer must match the token `iss` (browser-facing Keycloak URL); JWKS is
+      # fetched over the internal Docker network.
+      KEYCLOAK_ISSUER_URL: ${KEYCLOAK_ISSUER_URL:-http://localhost:8080/realms/nova}
+      KEYCLOAK_JWKS_URI: ${KEYCLOAK_JWKS_URI:-http://keycloak:8080/realms/nova/protocol/openid-connect/certs}
+      KEYCLOAK_TOKEN_URL: ${KEYCLOAK_TOKEN_URL:-http://keycloak:8080/realms/nova/protocol/openid-connect/token}
+      # Inbound: this agent's audience + the only client allowed to task it.
+      AGENT_AUDIENCE: ${AGENT_AUDIENCE:-nova-agent-sql-analyst}
+      AGENT_AUTHORIZED_PARTIES: ${AGENT_AUTHORIZED_PARTIES:-nova-celery-worker}
+      # Outbound: client_credentials identity to reach the entitlement endpoint
+      # and the DB MCP server (both audience nova-mcp-data).
+      AGENT_CLIENT_ID: ${AGENT_CLIENT_ID:-nova-agent-sql-analyst}
+      AGENT_CLIENT_SECRET: ${AGENT_CLIENT_SECRET:-nova-agent-sql-analyst-dev-secret}
+      MCP_AUDIENCE_SCOPE: ${MCP_AUDIENCE_SCOPE:-nova-mcp-data}
+      # Authoritative WRITE path: the agent invokes cataloged capabilities via the
+      # Node tool gateway with a token minted for the gateway's audience.
+      CAPABILITY_AUDIENCE_SCOPE: ${CAPABILITY_AUDIENCE_SCOPE:-nova-mcp-sales}
+      NOVA_API_INTERNAL_URL: ${NOVA_API_INTERNAL_URL:-http://api:3000}
+      DB_MCP_URL: ${DB_MCP_URL:-http://db-mcp-server:8002}
+      # LLM powering autonomous planning/reasoning/compose (OpenAI).
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0}
+      LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-30}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+    healthcheck:
+      test:
+        - 'CMD-SHELL'
+        - "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health')\" || exit 1"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Orchestrator task gateway (nova-orchestrator). FastAPI service colocated
   # with Celery so the Node API never needs broker credentials. Validates the
   # inbound nova-api service token (aud: nova-orchestrator) and enqueues the
@@ -314,6 +418,17 @@ services:
       # which re-enforces the entitlement snapshot.
       NOVA_API_INTERNAL_URL: ${NOVA_API_INTERNAL_URL:-http://api:3000}
       MAX_RUN_STEPS: ${MAX_RUN_STEPS:-8}
+      # A2A delegation: the worker tasks the SQL analyst agent over the internal
+      # network with an audience-restricted (nova-agent-sql-analyst) token.
+      SQL_ANALYST_AGENT_URL: ${SQL_ANALYST_AGENT_URL:-http://at-sql-analyser:8003}
+      SQL_ANALYST_AGENT_AUDIENCE: ${SQL_ANALYST_AGENT_AUDIENCE:-nova-agent-sql-analyst}
+      # LLM powering autonomous reasoning/critique/compose (OpenAI). Required for
+      # the worker role; the gateway role does not reason.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0}
+      LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-30}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
     command: ['celery', '-A', 'nova_orchestrator.celery_app', 'worker', '--loglevel=info', '--queues=orchestrator.longrunning', '--concurrency=2']
 
   # Webhook dispatcher (transactional outbox poller). Runs in its own worker pool

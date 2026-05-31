@@ -24,7 +24,14 @@ HERE = Path(__file__).resolve().parent
 SERVICE_ROOT = HERE.parent
 REPO_ROOT = SERVICE_ROOT.parent.parent
 REGISTRY_PATH = REPO_ROOT / "backend-services" / "packages" / "shared" / "rbac-registry.json"
-OUTPUT_PATH = SERVICE_ROOT / "src" / "nova_orchestrator" / "authz" / "nova_authz.py"
+
+# Every Python plane that re-enforces authorization gets a byte-identical copy of
+# the generated registry from the SAME TypeScript source of truth, so the CI
+# parity gate (`--check`) guarantees none of them can drift.
+OUTPUT_PATHS: tuple[Path, ...] = (
+    SERVICE_ROOT / "src" / "nova_orchestrator" / "authz" / "nova_authz.py",
+    REPO_ROOT / "agents" / "at-sql-analyser" / "src" / "at_sql_analyser" / "authz" / "nova_authz.py",
+)
 
 
 def _py_str_tuple(values: list[str]) -> str:
@@ -91,12 +98,16 @@ def main() -> None:
     rendered = render(registry)
 
     if check_only:
-        # CI parity gate: fail (non-zero) if the committed Python registry has
+        # CI parity gate: fail (non-zero) if any committed Python registry has
         # drifted from the canonical TypeScript source of truth (section 23).
-        current = OUTPUT_PATH.read_text(encoding="utf-8") if OUTPUT_PATH.exists() else ""
-        if current != rendered:
+        stale = [
+            path
+            for path in OUTPUT_PATHS
+            if (path.read_text(encoding="utf-8") if path.exists() else "") != rendered
+        ]
+        if stale:
             print(
-                "nova_authz parity check FAILED: the generated Python registry is "
+                "nova_authz parity check FAILED: a generated Python registry is "
                 "out of date with @nova/shared.\n"
                 "Run: npm run build -w @nova/shared && npm run rbac:export -w @nova/shared "
                 "&& python services/orchestrator/scripts/generate_nova_authz.py",
@@ -106,9 +117,10 @@ def main() -> None:
         print("nova_authz parity check passed.")
         return
 
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_PATH.write_text(rendered, encoding="utf-8")
-    print(f"Wrote {OUTPUT_PATH}")
+    for path in OUTPUT_PATHS:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(rendered, encoding="utf-8")
+        print(f"Wrote {path}")
 
 
 if __name__ == "__main__":

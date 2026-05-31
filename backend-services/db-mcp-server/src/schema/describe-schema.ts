@@ -1,81 +1,49 @@
-import type { DataSource } from 'typeorm';
-
-/** A column as surfaced to agents: enough to understand and query it safely. */
-export interface ColumnDescription {
-  readonly propertyName: string;
-  readonly column: string;
-  readonly type: string;
-  readonly isPrimary: boolean;
-  readonly isNullable: boolean;
-  readonly isGenerated: boolean;
-  readonly enumValues?: readonly string[];
-}
-
-export interface RelationDescription {
-  readonly propertyName: string;
-  readonly kind: string;
-  readonly targetTable: string;
-  readonly joinColumns: readonly string[];
-}
-
-export interface IndexDescription {
-  readonly name: string;
-  readonly columns: readonly string[];
-  readonly isUnique: boolean;
-}
-
-export interface TableDescription {
-  readonly entity: string;
-  readonly table: string;
-  readonly columns: readonly ColumnDescription[];
-  readonly relations: readonly RelationDescription[];
-  readonly indices: readonly IndexDescription[];
-}
-
-function normalizeColumnType(type: unknown): string {
-  if (typeof type === 'string') {
-    return type;
-  }
-  if (typeof type === 'function') {
-    return (type as { name?: string }).name ?? 'unknown';
-  }
-  return 'unknown';
-}
+import { MCP_READ_SCHEMA, MCP_READ_VIEWS } from '../data/views';
 
 /**
- * Surface the database schema from TypeORM metadata so A2A agents can discover
- * tables, columns, relations, and indexes without raw catalog access. This is
- * the read-only core of the MCP data-surfacer and reuses the single shared
- * `@nova/database` model — no schema duplication.
+ * Schema description for the planner, derived SOLELY from the curated
+ * `mcp_read` allowlist (`data/views.ts`) — never from live catalog reflection.
+ * This guarantees the advertised surface can never exceed the reviewed,
+ * PII-aware view set: a table that is not in the allowlist is invisible and
+ * unqueryable. PII-classified columns are flagged so the planner is steered
+ * away from selecting them (they are also masked at output by the redactor).
  */
-export function describeSchema(dataSource: DataSource): TableDescription[] {
-  return dataSource.entityMetadatas.map((meta) => {
-    const columns: ColumnDescription[] = meta.columns.map((col) => {
-      const enumValues = col.enum?.map((value) => String(value));
-      return {
-        propertyName: col.propertyName,
-        column: col.databaseName,
-        type: normalizeColumnType(col.type),
-        isPrimary: col.isPrimary,
-        isNullable: col.isNullable,
-        isGenerated: col.isGenerated,
-        ...(enumValues && enumValues.length > 0 ? { enumValues } : {}),
-      };
-    });
+export interface DescribedColumn {
+  readonly name: string;
+  readonly type: string;
+  readonly pii: boolean;
+  readonly description?: string;
+}
 
-    const relations: RelationDescription[] = meta.relations.map((rel) => ({
-      propertyName: rel.propertyName,
-      kind: rel.relationType,
-      targetTable: rel.inverseEntityMetadata.tableName,
-      joinColumns: rel.joinColumns.map((jc) => jc.databaseName),
-    }));
+export interface DescribedView {
+  readonly schema: string;
+  readonly name: string;
+  readonly description: string;
+  readonly ownerScoped: boolean;
+  readonly columns: readonly DescribedColumn[];
+}
 
-    const indices: IndexDescription[] = meta.indices.map((idx) => ({
-      name: idx.name,
-      columns: idx.columns.map((col) => col.databaseName),
-      isUnique: idx.isUnique,
-    }));
+export function describeSchema(): DescribedView[] {
+  return MCP_READ_VIEWS.map((view) => ({
+    schema: MCP_READ_SCHEMA,
+    name: view.name,
+    description: view.description,
+    ownerScoped: view.ownerScoped,
+    columns: view.columns.map((column) => ({
+      name: column.name,
+      type: column.type,
+      pii: column.sensitivity === 'pii',
+      ...(column.description ? { description: column.description } : {}),
+    })),
+  }));
+}
 
-    return { entity: meta.name, table: meta.tableName, columns, relations, indices };
-  });
+/** Compact view list (name + description + owner-scoping) for `list_views`. */
+export function listViews(): { schema: string; name: string; description: string; ownerScoped: boolean }[] {
+  return MCP_READ_VIEWS.map((view) => ({
+    schema: MCP_READ_SCHEMA,
+    name: view.name,
+    description: view.description,
+    ownerScoped: view.ownerScoped,
+  }));
 }

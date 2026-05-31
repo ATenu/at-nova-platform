@@ -11,6 +11,12 @@ export class ToolGatewayController {
     res.json(result);
   };
 
+  getEntitlement = async (req: Request, res: Response): Promise<void> => {
+    const { runId } = req.params as unknown as ToolCallParams;
+    const result = await this.service.getEntitlement(runId);
+    res.json(result);
+  };
+
   execute = async (req: Request, res: Response): Promise<void> => {
     const { runId } = req.params as unknown as ToolCallParams;
     const body = req.body as ToolCallBody;

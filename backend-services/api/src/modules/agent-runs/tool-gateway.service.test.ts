@@ -111,4 +111,34 @@ describe('ToolGatewayService', () => {
     ).rejects.toBeInstanceOf(ForbiddenError);
     expect(audits.at(-1)).toMatchObject({ decision: 'deny', reason: 'snapshot_hash_mismatch' });
   });
+
+  it('returns a verified, PII-free entitlement view (decision D2)', async () => {
+    const { service } = harness(runWithEntitlement(['ops-compliance']));
+    const view = await service.getEntitlement('run-1');
+    expect(view.runId).toBe('run-1');
+    expect(view.ownerSubject).toBe('kc-1');
+    expect(view.permissions).toContain('read-data');
+    expect(view.capabilityAllowlist).toContain('data.query.select');
+    expect(view.snapshotHash).toMatch(/^sha256:/);
+    // No tokens, prompts, or other PII fields are present on the view.
+    expect(Object.keys(view).sort()).toEqual(
+      [
+        'capabilityAllowlist',
+        'expiresAt',
+        'issuedAt',
+        'ownerSubject',
+        'permissions',
+        'roles',
+        'runId',
+        'snapshotHash',
+      ].sort(),
+    );
+  });
+
+  it('fails closed on the entitlement endpoint when the snapshot is tampered', async () => {
+    const found = runWithEntitlement(['ops-compliance']);
+    (found.entitlement as { snapshotHash: string }).snapshotHash = 'sha256:tampered';
+    const { service } = harness(found);
+    await expect(service.getEntitlement('run-1')).rejects.toBeInstanceOf(ForbiddenError);
+  });
 });

@@ -20,12 +20,15 @@ from celery import Task
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from .agent_client import AgentClient
+from .agents import AgentRegistry, build_default_registry
 from .authz.snapshot import EntitlementSnapshot, SnapshotIntegrityError, verify_snapshot
 from .celery_app import app
 from .config import load_config
 from .db import get_session_factory
 from .events import emit_event, record_audit, set_run_status
-from .graph import execute_plan
+from .graph import run_graph
+from .llm import OpenAIReasoner, Reasoner
 from .models import AgentRun, AgentRunEntitlement
 from .tokens import ServiceTokenClient
 from .tool_gateway import ToolGatewayClient
@@ -54,6 +57,9 @@ def process_run(
     *,
     gateway: ToolGatewayClient | None = None,
     max_steps: int = 8,
+    agent_client: AgentClient | None = None,
+    registry: AgentRegistry | None = None,
+    reasoner: Reasoner | None = None,
 ) -> str:
     """Process a run to a terminal status and return that status.
 
@@ -118,8 +124,27 @@ def process_run(
             session.commit()
         return "completed"
 
-    # Layers A + B + tool hops are driven by the orchestration graph.
-    return execute_plan(session_factory, run_id, snapshot, gateway=gateway, max_steps=max_steps)
+    # Layers A + B + tool/agent hops are driven by the LangGraph orchestration
+    # DAG. The reasoner is required for the graph; fail closed if it is missing.
+    if reasoner is None:
+        with session_factory() as session:
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"), {"k": run_id}
+            )
+            run = session.get(AgentRun, run_id)
+            if run is None or run.status in TERMINAL_STATUSES:
+                return run.status if run else "missing"
+            return _fail_closed(session, run, reason="reasoner_unavailable")
+    return run_graph(
+        session_factory,
+        run_id,
+        snapshot,
+        reasoner=reasoner,
+        gateway=gateway,
+        max_steps=max_steps,
+        agent_client=agent_client,
+        registry=registry,
+    )
 
 
 def _fail_closed(session: Session, run: AgentRun, *, reason: str) -> str:
@@ -168,10 +193,22 @@ def run_orchestration(
         client_secret=config.worker_client_secret,
     )
     gateway = ToolGatewayClient(base_url=config.nova_api_internal_url, tokens=tokens)
+    agent_client = AgentClient(tokens=tokens)
+    registry = build_default_registry(config)
+    reasoner: Reasoner = OpenAIReasoner(
+        api_key=config.openai_api_key,
+        model=config.llm_model,
+        temperature=config.llm_temperature,
+        timeout_s=config.llm_timeout_s,
+        base_url=config.openai_base_url,
+    )
     return process_run(
         get_session_factory(),
         run_id,
         entitlement_snapshot_hash,
         gateway=gateway,
         max_steps=config.max_run_steps,
+        agent_client=agent_client,
+        registry=registry,
+        reasoner=reasoner,
     )

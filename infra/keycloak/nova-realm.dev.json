@@ -117,6 +117,17 @@
             "id.token.claim": "false",
             "access.token.claim": "true"
           }
+        },
+        {
+          "name": "nova-agent-sql-analyst-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "nova-agent-sql-analyst",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
         }
       ]
     },
@@ -143,6 +154,67 @@
       "serviceAccountsEnabled": true,
       "clientAuthenticatorType": "client-secret",
       "secret": "nova-mcp-sales-dev-secret"
+    },
+    {
+      "clientId": "nova-agent-sql-analyst",
+      "name": "Nova A2A Agent: sql-analyser (resource server)",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "nova-agent-sql-analyst-dev-secret",
+      "protocolMappers": [
+        {
+          "name": "nova-mcp-data-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "nova-mcp-data",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "nova-mcp-sales-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "nova-mcp-sales",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "nova-mcp-data",
+      "name": "Nova MCP Server: data (read-only resource server)",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "nova-mcp-data-dev-secret",
+      "protocolMappers": [
+        {
+          "name": "nova-mcp-data-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "nova-mcp-data",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "users": [

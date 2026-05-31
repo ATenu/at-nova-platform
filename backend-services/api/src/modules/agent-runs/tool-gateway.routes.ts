@@ -10,8 +10,14 @@ import {
 } from './tool-gateway.schema';
 
 export interface ToolGatewayRouterDeps {
-  /** Service-token authentication (audience-restricted, azp-pinned). */
+  /** Service-token authentication for capability execution (worker, azp-pinned). */
   readonly serviceAuthenticate: RequestHandler;
+  /**
+   * Separate, narrower service-token authentication for the read-only
+   * entitlement snapshot endpoint (DB MCP server + agent; decision D2). Distinct
+   * audience/azp so the snapshot caller set never widens capability execution.
+   */
+  readonly entitlementAuthenticate: RequestHandler;
   readonly service: ToolGatewayService;
 }
 
@@ -30,6 +36,13 @@ export function createToolGatewayRouter(deps: ToolGatewayRouterDeps): Router {
     deps.serviceAuthenticate,
     validateRequest({ params: toolCallParamsSchema }),
     asyncHandler(controller.getPrompt),
+  );
+
+  router.get(
+    '/:runId/entitlement',
+    deps.entitlementAuthenticate,
+    validateRequest({ params: toolCallParamsSchema }),
+    asyncHandler(controller.getEntitlement),
   );
 
   router.post(

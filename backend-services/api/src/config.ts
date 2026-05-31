@@ -42,12 +42,21 @@ const apiEnvSchema = z
     ORCHESTRATOR_AUDIENCE: z.string().min(1).default('nova-orchestrator'),
     AGENT_RUN_TTL_SECONDS: z.coerce.number().int().positive().default(7200),
 
-    // Internal MCP tool gateway: the worker reaches it with an
-    // audience-restricted (nova-mcp-*) service token whose authorized party
-    // (azp) must be the worker client. Authorization is re-enforced from the
-    // entitlement snapshot, never from these claims.
+    // Internal MCP tool gateway: callers reach it with an audience-restricted
+    // (nova-mcp-*) service token whose authorized party (azp) must be in the
+    // allowlist — the Celery worker and the SQL analyst agent (its authoritative
+    // write path, decision D3). Authorization is re-enforced from the entitlement
+    // snapshot, never from these claims.
     INTERNAL_TOOL_GATEWAY_AUDIENCE: z.string().min(1).default('nova-mcp-sales'),
-    INTERNAL_TOOL_GATEWAY_AZP: z.string().min(1).default('nova-celery-worker'),
+    INTERNAL_TOOL_GATEWAY_AZP: csvFromEnv.default('nova-celery-worker,nova-agent-sql-analyst'),
+
+    // Internal entitlement snapshot read-back endpoint (decision D2). The DB MCP
+    // server and the `at-sql-analyser` agent fetch the verified snapshot for a
+    // run from here to re-enforce authorization (call-back fetch). It has its
+    // OWN narrower audience + azp allowlist so the read-only snapshot caller set
+    // never widens the high-privilege capability-execution endpoints.
+    INTERNAL_ENTITLEMENT_AUDIENCE: z.string().min(1).default('nova-mcp-data'),
+    INTERNAL_ENTITLEMENT_AZP: csvFromEnv.default('nova-agent-sql-analyst,nova-mcp-data'),
 
     // Shared cache / rate-limit Redis (frontend+backend instance). Optional in
     // dev/test (falls back to an in-memory limiter), required in production so
@@ -120,10 +129,15 @@ export interface ApiConfig {
     readonly audience: string;
     readonly tokenUrl: string;
   };
-  /** Internal MCP tool gateway: who may call it (audience + authorized party). */
+  /** Internal MCP tool gateway: who may call it (audience + authorized parties). */
   readonly toolGateway: {
     readonly audience: string;
-    readonly authorizedParty: string;
+    readonly authorizedParties: readonly string[];
+  };
+  /** Internal entitlement read-back endpoint: its own narrower caller allowlist. */
+  readonly entitlementEndpoint: {
+    readonly audience: string;
+    readonly authorizedParties: readonly string[];
   };
 }
 
@@ -184,7 +198,11 @@ export function loadApiConfig(): ApiConfig {
     },
     toolGateway: {
       audience: env.INTERNAL_TOOL_GATEWAY_AUDIENCE,
-      authorizedParty: env.INTERNAL_TOOL_GATEWAY_AZP,
+      authorizedParties: env.INTERNAL_TOOL_GATEWAY_AZP,
+    },
+    entitlementEndpoint: {
+      audience: env.INTERNAL_ENTITLEMENT_AUDIENCE,
+      authorizedParties: env.INTERNAL_ENTITLEMENT_AZP,
     },
   };
 }

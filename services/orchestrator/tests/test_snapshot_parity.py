@@ -9,6 +9,7 @@ fix is to keep both canonicalizers identical, not to relax verification.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import TypedDict
 
 import pytest
 
@@ -19,7 +20,17 @@ from nova_orchestrator.authz.snapshot import (
     verify_snapshot,
 )
 
-PARITY = {
+
+class _Parity(TypedDict):
+    owner_subject: str
+    roles: list[str]
+    permissions: list[str]
+    capability_allowlist: list[str]
+    issued_at_epoch_s: int
+    expires_at_epoch_s: int
+
+
+PARITY: _Parity = {
     "owner_subject": "kc-sub-123",
     "roles": ["sales-user"],
     "permissions": ["read-customers", "read-sales", "write-sales"],
@@ -47,8 +58,10 @@ def test_is_order_independent() -> None:
 
 
 def test_tamper_evident() -> None:
-    assert compute_snapshot_hash(**{**PARITY, "owner_subject": "kc-sub-999"}) != PARITY_HASH
-    assert compute_snapshot_hash(**{**PARITY, "expires_at_epoch_s": 1700007201}) != PARITY_HASH
+    tampered_subject: _Parity = {**PARITY, "owner_subject": "kc-sub-999"}
+    tampered_expiry: _Parity = {**PARITY, "expires_at_epoch_s": 1700007201}
+    assert compute_snapshot_hash(**tampered_subject) != PARITY_HASH
+    assert compute_snapshot_hash(**tampered_expiry) != PARITY_HASH
 
 
 def _snapshot(*, expires_at: datetime, snapshot_hash: str) -> EntitlementSnapshot:

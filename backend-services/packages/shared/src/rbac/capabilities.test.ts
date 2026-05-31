@@ -69,4 +69,37 @@ describe('capability catalog', () => {
       expect(capabilityRequiresApproval(capability)).toBe(capability.risk === 'high');
     }
   });
+
+  it('gates the data-layer capabilities on read-data only', () => {
+    for (const id of ['data.schema.describe', 'data.query.select', 'data.analyse.read']) {
+      const capability = getCapability(id);
+      expect(capability).toBeDefined();
+      expect(capability!.requiredPermissions).toEqual(['read-data']);
+      expect(capability!.risk).toBe('low');
+    }
+    // Only read-data holders see the data capabilities (Layer A filtering).
+    const dataUser = new Set<Permission>(['read-data']);
+    const allowed = capabilitiesForPermissions(dataUser).map((capability) => capability.id);
+    expect(allowed).toEqual(
+      expect.arrayContaining([
+        'data.schema.describe',
+        'data.query.select',
+        'data.analyse.read',
+        'data.act.write',
+      ]),
+    );
+    const noData = new Set<Permission>(['read-sales']);
+    expect(capabilitiesForPermissions(noData).map((c) => c.id)).not.toContain('data.query.select');
+  });
+
+  it('treats data.act.write as a high-risk dispatch skill (no standalone write permission)', () => {
+    const dispatch = getCapability('data.act.write');
+    expect(dispatch).toBeDefined();
+    expect(dispatch!.mode).toBe('write');
+    expect(dispatch!.risk).toBe('high');
+    // It never carries a write permission; concrete writes stay gated on their
+    // own permission + approval, so the agent cannot mint new write authority.
+    expect(dispatch!.requiredPermissions).toEqual(['read-data']);
+    expect(capabilityRequiresApproval(dispatch!)).toBe(true);
+  });
 });

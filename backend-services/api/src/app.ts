@@ -223,12 +223,27 @@ export function createApp(deps: AppDependencies): Express {
         issuerUrl: config.auth.issuerUrl,
         jwksUri: config.auth.jwksUri,
         audience: [config.toolGateway.audience],
-        authorizedParties: [config.toolGateway.authorizedParty],
+        authorizedParties: config.toolGateway.authorizedParties,
+      }),
+    );
+    // Narrower verifier for the read-only entitlement snapshot endpoint (D2):
+    // its own audience + azp allowlist (the DB MCP server and the agent), kept
+    // distinct from the capability-execution caller set.
+    const entitlementAuthenticate = createServiceAuthenticate(
+      new ServiceTokenVerifier({
+        issuerUrl: config.auth.issuerUrl,
+        jwksUri: config.auth.jwksUri,
+        audience: [config.entitlementEndpoint.audience],
+        authorizedParties: config.entitlementEndpoint.authorizedParties,
       }),
     );
     app.use(
       '/internal/agent-runs',
-      createToolGatewayRouter({ serviceAuthenticate, service: toolGatewayService }),
+      createToolGatewayRouter({
+        serviceAuthenticate,
+        entitlementAuthenticate,
+        service: toolGatewayService,
+      }),
     );
     logger.info('internal MCP tool gateway mounted');
   } else {

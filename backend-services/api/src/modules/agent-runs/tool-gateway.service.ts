@@ -34,6 +34,23 @@ export interface FinalizeResult {
 }
 
 /**
+ * Minimal, verified entitlement view returned by the internal entitlement
+ * read-back endpoint (decision D2). Carries only what a downstream resource
+ * server needs to re-enforce authorization and set the per-session ownership
+ * GUC — never tokens, prompts, rows, or other PII.
+ */
+export interface EntitlementView {
+  readonly runId: string;
+  readonly ownerSubject: string;
+  readonly roles: readonly string[];
+  readonly permissions: readonly string[];
+  readonly capabilityAllowlist: readonly string[];
+  readonly snapshotHash: string;
+  readonly issuedAt: string;
+  readonly expiresAt: string;
+}
+
+/**
  * Internal MCP tool gateway (the Node-hosted resource server for Nova's sales /
  * customers / issues / actions / SOP tools, audience `nova-mcp-*`). Reached only
  * by the Celery worker with an audience-restricted service token. It
@@ -128,6 +145,26 @@ export class ToolGatewayService {
     const responseRef = `nova-msg://${run.conversationId}/${message.id}`;
     await this.runs.setResponseRef(run.id, responseRef);
     return { responseRef };
+  }
+
+  /**
+   * Return the verified entitlement snapshot for a run (decision D2). The DB MCP
+   * server and the agent call this to re-enforce authorization independently.
+   * Fails closed on a tampered/expired snapshot via {@link loadVerified}; never
+   * returns tokens, prompts, rows, or other PII.
+   */
+  async getEntitlement(runId: string): Promise<EntitlementView> {
+    const { entitlement } = await this.loadVerified(runId);
+    return {
+      runId,
+      ownerSubject: entitlement.ownerSubject,
+      roles: [...entitlement.roles],
+      permissions: [...entitlement.permissions],
+      capabilityAllowlist: [...entitlement.capabilityAllowlist],
+      snapshotHash: entitlement.snapshotHash,
+      issuedAt: entitlement.issuedAt.toISOString(),
+      expiresAt: entitlement.expiresAt.toISOString(),
+    };
   }
 
   /** Load run + entitlement and fail closed on a tampered/expired snapshot. */
