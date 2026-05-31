@@ -30,6 +30,7 @@ function main(): void {
     clientId: config.controlPlane.clientId,
     clientSecret: config.controlPlane.clientSecret,
     scope: config.controlPlane.audienceScope,
+    requestAudienceScopes: config.controlPlane.requestAudienceScopes,
   });
   const snapshotClient = new SnapshotClient(tokens, {
     baseUrl: config.controlPlane.baseUrl,

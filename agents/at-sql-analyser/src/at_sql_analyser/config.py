@@ -47,6 +47,13 @@ def _float(name: str, default: float) -> float:
         raise ConfigError(f"Environment variable {name} must be a number") from exc
 
 
+def _bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _csv(name: str, default: str) -> tuple[str, ...]:
     raw = _optional(name, default)
     return tuple(item.strip() for item in raw.split(",") if item.strip())
@@ -70,6 +77,11 @@ class AgentConfig:
     agent_client_id: str
     agent_client_secret: str
     mcp_audience_scope: str
+    # When true, forward the target audience to the IdP as an OAuth scope (realm
+    # exposes per-audience client scopes). When false, the realm injects the
+    # audience via protocol mappers on the agent client and azp pinning guards
+    # each resource server (the dev realm's mode).
+    request_audience_scopes: bool
 
     # Downstream endpoints.
     nova_api_internal_url: str
@@ -113,6 +125,7 @@ def load_config() -> AgentConfig:
         agent_client_id=_optional("AGENT_CLIENT_ID", "nova-agent-sql-analyst"),
         agent_client_secret=_optional("AGENT_CLIENT_SECRET", ""),
         mcp_audience_scope=_optional("MCP_AUDIENCE_SCOPE", "nova-mcp-data"),
+        request_audience_scopes=_bool("AGENT_REQUEST_AUDIENCE_SCOPES", False),
         nova_api_internal_url=_optional("NOVA_API_INTERNAL_URL", "http://nova-api:3000"),
         db_mcp_url=_optional("DB_MCP_URL", "http://db-mcp-server:8002"),
         capability_audience_scope=_optional("CAPABILITY_AUDIENCE_SCOPE", "nova-mcp-sales"),

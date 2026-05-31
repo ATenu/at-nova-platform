@@ -22,6 +22,7 @@ def _config() -> OrchestratorConfig:
         orchestrator_audience="nova-orchestrator",
         worker_client_id="nova-celery-worker",
         worker_client_secret="",
+        worker_request_audience_scopes=False,
         run_soft_time_limit_s=6900,
         run_time_limit_s=7200,
         nova_api_internal_url="http://api:3000",

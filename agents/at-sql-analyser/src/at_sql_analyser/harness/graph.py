@@ -97,7 +97,7 @@ class GraphDeps:
     clock: Callable[[], float] = time.monotonic
 
 
-def build_graph(deps: GraphDeps) -> CompiledStateGraph[Any, Any, Any, Any]:
+def build_graph(deps: GraphDeps) -> CompiledStateGraph:
     """Compile the agent DAG with its dependencies bound into the nodes."""
     emit = deps.on_event
 

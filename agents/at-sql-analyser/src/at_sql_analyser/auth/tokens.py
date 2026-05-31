@@ -21,7 +21,20 @@ class ServiceTokenError(RuntimeError):
 
 
 class ServiceTokenClient:
-    """OAuth2 client_credentials minting with per-scope caching."""
+    """OAuth2 client_credentials minting with per-audience caching.
+
+    The per-call ``scope`` value names the *target audience* (e.g.
+    ``nova-mcp-data``) and always keys the cache, so tokens for segregated
+    targets never share a cache entry. Whether that value is also forwarded to
+    the IdP as an OAuth ``scope`` depends on ``request_audience_scopes``:
+
+    - ``True``: the realm exposes a per-audience *client scope* of the same name.
+    - ``False`` (default): the realm injects the audience via a protocol mapper
+      on the agent client instead. Forwarding an unregistered scope would make
+      the IdP reject the request (``invalid_scope``); the mapper-injected ``aud``
+      plus ``azp`` pinning at each resource server remain the authoritative
+      controls.
+    """
 
     def __init__(
         self,
@@ -30,11 +43,13 @@ class ServiceTokenClient:
         client_id: str,
         client_secret: str,
         scope: str | None = None,
+        request_audience_scopes: bool = False,
     ) -> None:
         self._token_url = token_url
         self._client_id = client_id
         self._client_secret = client_secret
         self._default_scope = scope
+        self._request_audience_scopes = request_audience_scopes
         self._cache: dict[str | None, tuple[str, float]] = {}
 
     def get_token(self, scope: str | None = None) -> str:
@@ -52,7 +67,7 @@ class ServiceTokenClient:
             "client_id": self._client_id,
             "client_secret": self._client_secret,
         }
-        if requested_scope:
+        if requested_scope and self._request_audience_scopes:
             data["scope"] = requested_scope
 
         try:

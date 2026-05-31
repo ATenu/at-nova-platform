@@ -346,6 +346,7 @@ def create_app(
         token_url=cfg.keycloak_token_url,
         client_id=cfg.agent_client_id,
         client_secret=cfg.agent_client_secret,
+        request_audience_scopes=cfg.request_audience_scopes,
     )
     sc: SnapshotPort = snapshot_client or SnapshotClient(
         tokens, base_url=cfg.nova_api_internal_url, audience_scope=cfg.mcp_audience_scope

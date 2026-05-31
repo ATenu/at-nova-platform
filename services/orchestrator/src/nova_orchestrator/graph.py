@@ -25,6 +25,7 @@ Security invariants are preserved exactly and are NOT delegated to the LLM:
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -40,6 +41,7 @@ from .agents import AgentRegistry
 from .authz.policy_gate import REASON_ALLOWED, evaluate_capability
 from .authz.registry import get_capability
 from .authz.snapshot import EntitlementSnapshot
+from .capability_guide import CapabilityToolSpec, spec_for, tool_name_for
 from .dag import MenuItem, Observation, OrchestrationState
 from .events import emit_event, enqueue_webhook_if_configured, record_audit, set_run_status
 from .llm import Reasoner
@@ -116,24 +118,37 @@ def _step_already_done(session: Session, run_id: str, idempotency_key: str) -> b
 
 
 def _build_menu(allowlist: frozenset[str]) -> tuple[MenuItem, ...]:
-    """Layer A: the only actions the reasoner may ever choose from."""
+    """Layer A: the only actions the reasoner may ever choose from (as LLM tools).
+
+    Only orchestrator-dispatchable capabilities are exposed. ``mcp-tool``
+    capabilities (e.g. ``data.query.select``) are the data agents' OWN internal
+    tools served by the DB MCP server; the worker cannot execute them directly,
+    so showing them would let the model pick a dead end. ``agent-skill``
+    capabilities are dispatchable either via A2A (if an agent is registered) or
+    via the Node tool gateway, so they are the menu.
+    """
     items: list[MenuItem] = []
     for capability_id in sorted(allowlist):
         capability = get_capability(capability_id)
-        if capability is None:
+        if capability is None or capability.kind == "mcp-tool":
             continue
+        guide = spec_for(capability_id)
         items.append(
             MenuItem(
                 capability_id=capability.id,
                 kind=capability.kind,
                 mode=capability.mode,
                 resource_scoped=capability.resource_scoped,
+                tool_name=tool_name_for(capability.id),
+                summary=guide.summary,
+                when_to_use=guide.when_to_use,
+                input_fields=guide.input_fields,
             )
         )
     return tuple(items)
 
 
-def build_graph(deps: OrchestratorDeps) -> CompiledStateGraph[Any, Any, Any, Any]:
+def build_graph(deps: OrchestratorDeps) -> CompiledStateGraph:
     menu = _build_menu(deps.snapshot.capability_allowlist)
 
     def load_context(state: OrchestrationState) -> dict[str, Any]:
@@ -169,11 +184,23 @@ def build_graph(deps: OrchestratorDeps) -> CompiledStateGraph[Any, Any, Any, Any
         capability_id = decision.capability_id.strip()
         if decision.action == "finish" or not capability_id:
             return {"route": "compose", "decision_action": "finish"}
+        tool_input = dict(decision.input)
+        # Don't dispatch a scoped capability the model could not fully populate
+        # (e.g. picked sales.report.customer without a customerId): finishing with
+        # a clarification beats a guaranteed validation failure downstream.
+        if _missing_required(spec_for(capability_id), tool_input):
+            return {"route": "compose", "decision_action": "finish"}
+        # No-progress guard: never re-run an identical capability+input, which
+        # would otherwise burn the step budget on a loop.
+        signature = _call_signature(capability_id, tool_input)
+        if signature in set(state.get("attempts", [])):
+            return {"route": "compose", "decision_action": "finish"}
         return {
-            "route": _route_for_capability(capability_id),
+            "route": _route_for_capability(capability_id, deps.registry),
             "decision_capability": capability_id,
-            "decision_input": dict(decision.input),
+            "decision_input": tool_input,
             "iteration": iteration + 1,
+            "attempts": [signature],
         }
 
     def tool_dispatch(state: OrchestrationState) -> dict[str, Any]:
@@ -252,10 +279,36 @@ def _route(state: OrchestrationState) -> str:
     return route if isinstance(route, str) else "compose"
 
 
-def _route_for_capability(capability_id: str) -> str:
-    """Dispatch a cataloged agent-skill via A2A; everything else via the tool gateway."""
-    capability = get_capability(capability_id)
-    return "agent" if capability is not None and capability.kind == "agent-skill" else "tool"
+def _route_for_capability(capability_id: str, registry: AgentRegistry | None) -> str:
+    """Route by *dispatchability*, not by catalog ``kind``.
+
+    A capability goes over A2A only if a real agent is registered for it
+    (e.g. the SQL analyst owns ``data.analyse.read`` / ``data.act.write``).
+    Every other authorized capability (``sales.report.customer``,
+    ``issues.create``, ``actions.next``, ...) is executed by the Node tool
+    gateway's ``CapabilityExecutor``, so it routes to the tool path. Routing is
+    not authorization: Layer B re-checks the hop regardless of the route.
+    """
+    if registry is not None and registry.agent_for_skill(capability_id) is not None:
+        return "agent"
+    return "tool"
+
+
+def _missing_required(spec: CapabilityToolSpec, tool_input: dict[str, Any]) -> list[str]:
+    """Required input keys (per the tool schema) absent from the model's args."""
+    required = spec.input_schema.get("required")
+    if not isinstance(required, list):
+        return []
+    return [key for key in required if isinstance(key, str) and key not in tool_input]
+
+
+def _call_signature(capability_id: str, tool_input: dict[str, Any]) -> str:
+    """Stable identity of a capability call, for the no-progress guard."""
+    try:
+        payload = json.dumps(tool_input, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        payload = repr(sorted(tool_input.items()))
+    return f"{capability_id}|{payload}"
 
 
 def _after_dispatch(result: StepResult) -> dict[str, Any]:

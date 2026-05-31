@@ -12,8 +12,15 @@ export interface ServiceTokenClientConfig {
   readonly tokenUrl: string;
   readonly clientId: string;
   readonly clientSecret: string;
-  /** Optional space-delimited scopes to request. */
+  /**
+   * Target audience name (e.g. ``nova-mcp-data``). When
+   * ``requestAudienceScopes`` is true this is forwarded to the IdP as an OAuth
+   * ``scope`` parameter. When false (default) the realm is expected to inject
+   * the audience via a protocol mapper on the client instead.
+   */
   readonly scope?: string;
+  /** Forward ``scope`` to the IdP as an OAuth scope parameter. Default false. */
+  readonly requestAudienceScopes?: boolean;
   /** Network timeout for the token request. */
   readonly requestTimeoutMs?: number;
   /** Refresh the cached token this many ms before its expiry. */
@@ -56,7 +63,7 @@ export class ServiceTokenClient {
       client_id: this.config.clientId,
       client_secret: this.config.clientSecret,
     });
-    if (this.config.scope) {
+    if (this.config.scope && this.config.requestAudienceScopes) {
       body.set('scope', this.config.scope);
     }
 

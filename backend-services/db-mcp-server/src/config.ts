@@ -36,6 +36,9 @@ const mcpEnvSchema = z.object({
   MCP_DATA_CLIENT_SECRET: z.string().min(1).optional(),
   // Audience the snapshot fetch token targets (the entitlement endpoint).
   ENTITLEMENT_AUDIENCE_SCOPE: z.string().min(1).default('nova-mcp-data'),
+  // Dev realm injects audiences via protocol mappers; set true only when the IdP
+  // exposes matching per-audience client scopes.
+  ENTITLEMENT_REQUEST_AUDIENCE_SCOPES: z.string().optional().default('false'),
 
   // SQL-safety limits (§3.2).
   SQL_MAX_ROWS: z.coerce.number().int().positive().max(10_000).default(500),
@@ -68,6 +71,7 @@ export interface McpConfig {
     readonly clientId: string;
     readonly clientSecret: string | null;
     readonly audienceScope: string;
+    readonly requestAudienceScopes: boolean;
   };
   readonly sql: {
     readonly maxRows: number;
@@ -116,6 +120,9 @@ export function loadMcpConfig(): McpConfig {
       clientId: env.MCP_DATA_CLIENT_ID,
       clientSecret: env.MCP_DATA_CLIENT_SECRET ?? null,
       audienceScope: env.ENTITLEMENT_AUDIENCE_SCOPE,
+      requestAudienceScopes: ['1', 'true', 'yes', 'on'].includes(
+        env.ENTITLEMENT_REQUEST_AUDIENCE_SCOPES.toLowerCase(),
+      ),
     },
     sql: {
       maxRows: env.SQL_MAX_ROWS,

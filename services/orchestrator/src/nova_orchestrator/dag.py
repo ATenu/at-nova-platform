@@ -13,12 +13,16 @@ from typing import Annotated, Any, TypedDict
 
 @dataclass(frozen=True)
 class MenuItem:
-    """One Layer-A-authorized action shown to the reasoner (the only menu)."""
+    """One Layer-A-authorized action shown to the reasoner as an LLM tool."""
 
     capability_id: str
     kind: str
     mode: str
     resource_scoped: bool
+    tool_name: str
+    summary: str
+    when_to_use: str
+    input_fields: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -40,8 +44,13 @@ def _append_observation(
     return [*base, *new]
 
 
+def _append_attempts(current: list[str], new: list[str]) -> list[str]:
+    base = current if isinstance(current, list) else []
+    return [*base, *new]
+
+
 class OrchestrationState(TypedDict, total=False):
-    """LangGraph state. ``observations`` appends; other fields are last-value."""
+    """LangGraph state. ``observations``/``attempts`` append; others are last-value."""
 
     run_id: str
     prompt: str
@@ -51,6 +60,7 @@ class OrchestrationState(TypedDict, total=False):
     decision_capability: str
     decision_input: dict[str, Any]
     observations: Annotated[list[Observation], _append_observation]
+    attempts: Annotated[list[str], _append_attempts]
     answer: str | None
     status: str
     canceled: bool

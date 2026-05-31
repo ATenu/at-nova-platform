@@ -44,6 +44,7 @@ def make_config() -> AgentConfig:
         agent_client_id="nova-agent-sql-analyst",
         agent_client_secret="",
         mcp_audience_scope="nova-mcp-data",
+        request_audience_scopes=False,
         nova_api_internal_url="http://nova-api:3000",
         db_mcp_url="http://db-mcp-server:8002",
         capability_audience_scope="nova-mcp-sales",

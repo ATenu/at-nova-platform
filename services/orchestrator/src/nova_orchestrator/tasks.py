@@ -191,6 +191,7 @@ def run_orchestration(
         token_url=config.keycloak_token_url,
         client_id=config.worker_client_id,
         client_secret=config.worker_client_secret,
+        request_audience_scopes=config.worker_request_audience_scopes,
     )
     gateway = ToolGatewayClient(base_url=config.nova_api_internal_url, tokens=tokens)
     agent_client = AgentClient(tokens=tokens)

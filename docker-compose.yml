@@ -296,6 +296,9 @@ services:
       MCP_DATA_CLIENT_ID: ${MCP_DATA_CLIENT_ID:-nova-mcp-data}
       MCP_DATA_CLIENT_SECRET: ${MCP_DATA_CLIENT_SECRET:-nova-mcp-data-dev-secret}
       ENTITLEMENT_AUDIENCE_SCOPE: ${ENTITLEMENT_AUDIENCE_SCOPE:-nova-mcp-data}
+      # Dev realm injects audiences via protocol mappers on the MCP client; do not
+      # forward the audience as an OAuth scope (Keycloak returns invalid_scope).
+      ENTITLEMENT_REQUEST_AUDIENCE_SCOPES: ${ENTITLEMENT_REQUEST_AUDIENCE_SCOPES:-false}
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:8002/healthz || exit 1']
       interval: 10s
@@ -337,6 +340,11 @@ services:
       AGENT_CLIENT_ID: ${AGENT_CLIENT_ID:-nova-agent-sql-analyst}
       AGENT_CLIENT_SECRET: ${AGENT_CLIENT_SECRET:-nova-agent-sql-analyst-dev-secret}
       MCP_AUDIENCE_SCOPE: ${MCP_AUDIENCE_SCOPE:-nova-mcp-data}
+      # Dev realm injects per-hop audiences via protocol mappers on the agent
+      # client, so the agent must NOT forward the audience as an OAuth scope
+      # (Keycloak returns invalid_scope). Set true only in a realm that defines
+      # matching per-audience client scopes.
+      AGENT_REQUEST_AUDIENCE_SCOPES: ${AGENT_REQUEST_AUDIENCE_SCOPES:-false}
       # Authoritative WRITE path: the agent invokes cataloged capabilities via the
       # Node tool gateway with a token minted for the gateway's audience.
       CAPABILITY_AUDIENCE_SCOPE: ${CAPABILITY_AUDIENCE_SCOPE:-nova-mcp-sales}
@@ -412,6 +420,12 @@ services:
       KEYCLOAK_TOKEN_URL: ${KEYCLOAK_TOKEN_URL:-http://keycloak:8080/realms/nova/protocol/openid-connect/token}
       WORKER_CLIENT_ID: ${WORKER_CLIENT_ID:-nova-celery-worker}
       WORKER_CLIENT_SECRET: ${WORKER_CLIENT_SECRET:-nova-celery-worker-dev-secret}
+      # Dev realm injects per-hop audiences via protocol mappers on the worker
+      # client (not per-audience OAuth client scopes), so the worker must NOT
+      # forward the audience as a scope (Keycloak would reject it as
+      # invalid_scope). Set true only in a realm that defines per-audience client
+      # scopes for true single-audience narrowing.
+      WORKER_REQUEST_AUDIENCE_SCOPES: ${WORKER_REQUEST_AUDIENCE_SCOPES:-false}
       # The worker calls the Node-hosted MCP tool gateway with an
       # audience-restricted (nova-mcp-*) service token. It never touches the
       # business `nova` DB; all business reads/writes go through this gateway,

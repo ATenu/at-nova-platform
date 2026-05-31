@@ -47,6 +47,13 @@ def _float(name: str, default: float) -> float:
         raise ConfigError(f"Environment variable {name} must be a number") from exc
 
 
+def _bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class OrchestratorConfig:
     role: str
@@ -59,6 +66,11 @@ class OrchestratorConfig:
     orchestrator_audience: str
     worker_client_id: str
     worker_client_secret: str
+    # When true, forward the target audience to the IdP as an OAuth scope (realm
+    # exposes per-audience client scopes). When false, the realm injects the
+    # audience via protocol mappers on the worker client and azp pinning guards
+    # each resource server (the dev realm's mode).
+    worker_request_audience_scopes: bool
     run_soft_time_limit_s: int
     run_time_limit_s: int
     # Internal MCP tool gateway (Node control plane) the worker calls back into.
@@ -101,6 +113,7 @@ def load_config() -> OrchestratorConfig:
         worker_client_id=_optional("WORKER_CLIENT_ID", "nova-celery-worker"),
         # Secret is only required when the worker actually mints per-hop tokens.
         worker_client_secret=_optional("WORKER_CLIENT_SECRET", ""),
+        worker_request_audience_scopes=_bool("WORKER_REQUEST_AUDIENCE_SCOPES", False),
         run_soft_time_limit_s=_int("RUN_SOFT_TIME_LIMIT_S", 6900),
         run_time_limit_s=_int("RUN_TIME_LIMIT_S", 7200),
         nova_api_internal_url=_optional("NOVA_API_INTERNAL_URL", "http://nova-api:3000"),
