@@ -187,7 +187,7 @@ function TraceViewBody({
             <InvocationRow
               key={invocation.id}
               invocation={invocation}
-              defaultOpen={live && invocation.status === 'running'}
+              defaultOpen={live === true && invocation.status === 'running'}
             />
           ))}
         </ol>
@@ -225,7 +225,7 @@ function CollapsibleHeader({
 }
 
 function RunTraceBody({ events, live }: { events: readonly AgentRunEventDto[]; live?: boolean }) {
-  return <TraceViewBody events={events} live={live} />;
+  return <TraceViewBody events={events} live={live ?? false} />;
 }
 
 export function LiveRunTrace({

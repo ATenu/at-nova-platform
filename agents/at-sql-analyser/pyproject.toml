@@ -9,6 +9,7 @@ dependencies = [
     "langchain-core>=0.3,<1",
     "langchain-openai>=0.2,<1",
     "mcp>=1.0,<2",
+    "starlette>=1.0.1,<2",
     "uvicorn[standard]>=0.32,<1",
     "httpx>=0.27,<1",
     "pyjwt[crypto]>=2.9,<3",
@@ -21,7 +22,10 @@ dependencies = [
 # no-op when the package is absent or unconfigured, so deployments that don't
 # run Langfuse still work and tests stay dependency-light. v3 is the
 # OpenTelemetry-native SDK (native @observe / langfuse.langchain.CallbackHandler).
-observability = ["langfuse>=3,<4"]
+# The langchain umbrella package is required by langfuse.langchain (it does
+# ``import langchain`` to guard the integration); without it the CallbackHandler
+# import fails and LangChain/LLM calls are never traced.
+observability = ["langfuse>=3,<4", "langchain>=0.3,<1"]
 dev = [
     "pytest>=8,<9",
     "pytest-asyncio>=0.24,<1",

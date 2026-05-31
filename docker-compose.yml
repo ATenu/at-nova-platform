@@ -698,9 +698,12 @@ services:
 
   # One-shot: seed the custom kimi-2.6 model price via the native Models API.
   # OpenAI model prices ship built into Langfuse, so only kimi-2.6 needs adding.
-  # Idempotent: skips if a kimi-2.6 definition already exists.
+  # Convergent: deletes any prior custom kimi-2.6 definition and recreates it from
+  # the current .env prices, so a plain `docker compose up` is always the single
+  # source of truth (changing a price + re-up just works). Built-in/managed model
+  # definitions are never touched. Uses only the Python stdlib (no extra deps).
   langfuse-seed:
-    image: curlimages/curl:8.11.1
+    image: python:3.12-alpine
     container_name: nova-langfuse-seed
     depends_on:
       langfuse-web:
@@ -709,31 +712,61 @@ services:
       LANGFUSE_HOST: http://langfuse-web:3000
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-nova-chat-dev}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-nova-chat-dev}
-      # USD price per single token. Fill with the current Moonshot kimi-2.6 rates.
+      # USD price per SINGLE token (published per-1M rate / 1_000_000).
       KIMI_INPUT_PRICE: ${KIMI_INPUT_PRICE:-0.0}
       KIMI_OUTPUT_PRICE: ${KIMI_OUTPUT_PRICE:-0.0}
     entrypoint:
-      - sh
+      - python
       - -c
       - |
-        set -eu
-        echo "Seeding kimi-2.6 model price (idempotent)..."
-        # matchPattern uses a [.] character class (not \.) so the JSON stays valid
-        # after shell quoting; it matches the literal dot in "kimi-2.6". The POST
-        # is the source of truth for idempotency: Langfuse rejects a duplicate
-        # model name with HTTP 400 ("already exists"), which we treat as success.
-        status=$$(curl -s -o /tmp/seed_resp -w "%{http_code}" \
-          -u "$$LANGFUSE_PUBLIC_KEY:$$LANGFUSE_SECRET_KEY" \
-          -H 'Content-Type: application/json' \
-          -X POST "$$LANGFUSE_HOST/api/public/models" \
-          -d "{\"modelName\":\"kimi-2.6\",\"matchPattern\":\"(?i)^kimi-2[.]6$$\",\"unit\":\"TOKENS\",\"inputPrice\":$$KIMI_INPUT_PRICE,\"outputPrice\":$$KIMI_OUTPUT_PRICE}")
-        if [ "$$status" = "200" ] || [ "$$status" = "201" ]; then
-          echo "Seeded kimi-2.6."
-        elif grep -q "already exists" /tmp/seed_resp; then
-          echo "kimi-2.6 already present; skipping."
-        else
-          echo "Failed to seed kimi-2.6 (HTTP $$status):"; cat /tmp/seed_resp; exit 1
-        fi
+        import base64, json, os, urllib.error, urllib.request
+
+        host = os.environ["LANGFUSE_HOST"].rstrip("/")
+        auth = base64.b64encode(
+            f"{os.environ['LANGFUSE_PUBLIC_KEY']}:{os.environ['LANGFUSE_SECRET_KEY']}".encode()
+        ).decode()
+        headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
+        in_price = float(os.environ.get("KIMI_INPUT_PRICE") or 0)
+        out_price = float(os.environ.get("KIMI_OUTPUT_PRICE") or 0)
+
+        def call(method, path, body=None):
+            data = json.dumps(body).encode() if body is not None else None
+            req = urllib.request.Request(host + path, data=data, headers=headers, method=method)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read().decode()
+                return resp.status, (json.loads(raw) if raw else None)
+
+        # Drop any prior custom kimi-2.6 definition so prices always converge to .env.
+        removed, page = 0, 1
+        while True:
+            _, payload = call("GET", f"/api/public/models?limit=100&page={page}")
+            items = (payload or {}).get("data", []) or []
+            for model in items:
+                if model.get("modelName") == "kimi-2.6" and not model.get("isLangfuseManaged", False):
+                    call("DELETE", f"/api/public/models/{model['id']}")
+                    removed += 1
+            if len(items) < 100:
+                break
+            page += 1
+
+        # The optional "-" and "k" in the pattern cover every string the gateway may
+        # report (kimi-2.6, kimi-k2.6, and the Azure form "Kimi-K2.6") so cost is
+        # always attributed. unit=TOKENS means inputPrice/outputPrice are per token.
+        status, _ = call(
+            "POST",
+            "/api/public/models",
+            {
+                "modelName": "kimi-2.6",
+                "matchPattern": r"(?i)^kimi-?k?2[.]6$$",
+                "unit": "TOKENS",
+                "inputPrice": in_price,
+                "outputPrice": out_price,
+            },
+        )
+        print(
+            f"Seeded kimi-2.6 (removed {removed} stale; input={in_price}/tok "
+            f"output={out_price}/tok; http={status})"
+        )
     restart: 'no'
 
 volumes:

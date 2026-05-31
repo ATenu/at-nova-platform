@@ -82,6 +82,15 @@ function agentLabel(agent: string, status: InvocationStatus): string {
   return 'Agent step';
 }
 
+/**
+ * Build the optional `error` slice for a TraceInvocation. Returns an explicitly
+ * typed `{ error?: string }` so that, under `exactOptionalPropertyTypes`, the
+ * field is omitted (never set to `undefined`) when there is no error.
+ */
+function errorPatch(value: string | undefined): { error?: string } {
+  return value === undefined ? {} : { error: value };
+}
+
 /** Map a `user`-visibility run event to a renderable item (or skip it). */
 export function describeEvent(event: AgentRunEventDto): Omit<TraceItem, 'id'> | null {
   const payload = event.payload;
@@ -222,6 +231,7 @@ export function buildTraceView(events: readonly AgentRunEventDto[]): TraceView {
       case 'tool.call.completed':
       case 'tool.call.failed': {
         const status = invocationStatusFromTerminal(event.type);
+        const errorText = typeof payload.error === 'string' ? payload.error : undefined;
         if (openTool) {
           openTool = {
             ...openTool,
@@ -229,7 +239,7 @@ export function buildTraceView(events: readonly AgentRunEventDto[]): TraceView {
             label: toolLabel(openTool.capability || capability, status),
             input: openTool.input ?? payload.input,
             output: payload.output,
-            error: typeof payload.error === 'string' ? payload.error : undefined,
+            ...errorPatch(errorText),
           };
           invocations[invocations.length - 1] = openTool;
         } else {
@@ -242,8 +252,8 @@ export function buildTraceView(events: readonly AgentRunEventDto[]): TraceView {
             status,
             input: payload.input,
             output: payload.output,
-            error: typeof payload.error === 'string' ? payload.error : undefined,
             substeps: [],
+            ...errorPatch(errorText),
           });
         }
         openTool = null;
@@ -267,21 +277,23 @@ export function buildTraceView(events: readonly AgentRunEventDto[]): TraceView {
       case 'agent.call.failed': {
         const status = invocationStatusFromTerminal(event.type);
         if (openAgent) {
+          const errorText =
+            typeof payload.reason === 'string'
+              ? payload.reason
+              : typeof payload.error === 'string'
+                ? payload.error
+                : openAgent.error;
           openAgent = {
             ...openAgent,
             status,
             label: agentLabel(openAgent.agent || agent, status),
             input: openAgent.input ?? payload.input,
             output: payload.output ?? openAgent.output,
-            error:
-              typeof payload.reason === 'string'
-                ? payload.reason
-                : typeof payload.error === 'string'
-                  ? payload.error
-                  : openAgent.error,
+            ...errorPatch(errorText),
           };
           invocations[invocations.length - 1] = openAgent;
         } else {
+          const errorText = typeof payload.reason === 'string' ? payload.reason : undefined;
           invocations.push({
             id: event.id,
             kind: 'agent',
@@ -290,8 +302,8 @@ export function buildTraceView(events: readonly AgentRunEventDto[]): TraceView {
             agent,
             status,
             output: payload.output,
-            error: typeof payload.reason === 'string' ? payload.reason : undefined,
             substeps: [],
+            ...errorPatch(errorText),
           });
         }
         openAgent = null;
@@ -301,8 +313,12 @@ export function buildTraceView(events: readonly AgentRunEventDto[]): TraceView {
         if (openAgent && isAgentInternalEvent(event.type)) {
           const described = describeEvent(event);
           if (described) {
-            const substeps = [...openAgent.substeps, { id: event.id, ...described }];
-            openAgent = { ...openAgent, substeps };
+            const current: TraceInvocation = openAgent;
+            const substeps: readonly TraceItem[] = [
+              ...current.substeps,
+              { id: event.id, ...described },
+            ];
+            openAgent = { ...current, substeps };
             invocations[invocations.length - 1] = openAgent;
           }
         } else {

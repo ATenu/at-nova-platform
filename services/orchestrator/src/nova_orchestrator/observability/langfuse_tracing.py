@@ -130,9 +130,13 @@ def get_tracer() -> Any | None:
 
         # Keys/host are read from LANGFUSE_* env automatically; the mask + env are
         # passed explicitly. tracing_enabled gates export without removing the API.
+        # blocked_instrumentation_scopes drops the a2a-sdk's own OpenTelemetry
+        # spans (transport/event-queue internals) so they never pollute Langfuse
+        # as standalone traces; our explicit spans capture the A2A hop instead.
         _client = Langfuse(
             mask=mask,
             environment=os.environ.get("LANGFUSE_ENVIRONMENT") or None,
+            blocked_instrumentation_scopes=["a2a-python-sdk"],
         )
     except Exception:  # noqa: BLE001 - never let observability break startup
         logger.warning("langfuse client init failed; tracing disabled", exc_info=False)
@@ -161,6 +165,11 @@ def make_callback_handler() -> Any | None:
 
         return CallbackHandler()
     except Exception:  # noqa: BLE001
+        logger.warning(
+            "langfuse langchain CallbackHandler unavailable; LLM calls will not be "
+            "traced (is the 'langchain' package installed?)",
+            exc_info=False,
+        )
         return None
 
 
