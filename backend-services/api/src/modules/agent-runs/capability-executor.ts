@@ -337,9 +337,17 @@ export class CapabilityExecutor {
       };
     }
     const sops = await this.services.sops.listSops({ page: 1, pageSize: 20 });
+    const titles = sops.items
+      .map((sop) => sop.name)
+      .filter((name): name is string => Boolean(name))
+      .slice(0, RESOLVER_PREVIEW)
+      .join('; ');
     return {
       capabilityId: 'sop.read',
-      summary: `${sops.total} SOP(s) available.`,
+      summary:
+        sops.total === 0
+          ? 'No SOPs available.'
+          : `${sops.total} SOP(s) available${titles ? `: ${titles}` : ''}.`,
       data: { sops: sops.items, total: sops.total },
       links: [],
     };
@@ -445,9 +453,13 @@ export class CapabilityExecutor {
       totalAmountReceipt: sale.totalAmountReceipt,
       paymentReceived: sale.paymentReceived,
     }));
+    const salesPreview = matches
+      .slice(0, RESOLVER_PREVIEW)
+      .map((m) => `${m.id.slice(0, 8)} (${m.totalAmountReceipt}, ${m.paymentReceived ? 'paid' : 'unpaid'})`)
+      .join('; ');
     return {
       capabilityId: 'sales.list',
-      summary: `${result.total} sale(s) match.`,
+      summary: `${result.total} sale(s) match${salesPreview ? `: ${salesPreview}` : ''}.`,
       data: { sales: matches, total: result.total },
       links: matches.slice(0, RESOLVER_PREVIEW).map((m) => ({
         label: `Open sale ${m.id.slice(0, 8)}`,
@@ -483,9 +495,13 @@ export class CapabilityExecutor {
       status: issue.status,
       dateRaised: issue.dateRaised,
     }));
+    const issuesPreview = matches
+      .slice(0, RESOLVER_PREVIEW)
+      .map((m) => `${m.id.slice(0, 8)} (${m.status})`)
+      .join('; ');
     return {
       capabilityId: 'issues.list',
-      summary: `${result.total} issue(s) match.`,
+      summary: `${result.total} issue(s) match${issuesPreview ? `: ${issuesPreview}` : ''}.`,
       data: { issues: matches, total: result.total },
       links: matches.slice(0, RESOLVER_PREVIEW).map((m) => ({
         label: `Open issue ${m.id.slice(0, 8)}`,

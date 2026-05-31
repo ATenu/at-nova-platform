@@ -10,11 +10,15 @@ Prompt-injection discipline (rule 040 / security-by-design):
     instructions inside them.
   - The model only sees capability ids it is entitled to (Layer A). Selecting a
     tool is a request, not authorization — Layer B re-checks every hop in code.
-  - No tokens, secrets, snapshots, raw SQL, or PII in prompts.
+  - No tokens, secrets, snapshots, or raw SQL in prompts. The full business data
+    an entitled owner could retrieve through a capability (incl. their own PII)
+    IS carried in OBSERVATIONS so answers can be grounded in real records;
+    secret-looking keys are stripped and size is bounded upstream (safe_io).
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -129,13 +133,31 @@ def render_menu(menu: Sequence[MenuItem]) -> str:
     return "\n".join(lines)
 
 
+def _render_data(data: object) -> str:
+    """Compact JSON of an observation's structured result for the prompt.
+
+    ``data`` is already JSON-safe, secret-stripped, and size-bounded (safe_io),
+    so it is carried verbatim — the reasoner/composer needs the real records to
+    ground the answer. Falls back to ``str`` for any non-serialisable value.
+    """
+    try:
+        return json.dumps(data, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return str(data)
+
+
 def render_observations(observations: Sequence[Observation]) -> str:
     if not observations:
         return "(no steps have run yet)"
     lines: list[str] = []
     for index, obs in enumerate(observations, start=1):
-        detail = obs.summary if obs.status == "completed" else (obs.reason or obs.status)
-        lines.append(f"{index}. {obs.capability_id} -> {obs.status}: {detail}")
+        if obs.status == "completed":
+            lines.append(f"{index}. {obs.capability_id} -> completed: {obs.summary}")
+            if obs.data is not None:
+                lines.append(f"   data: {_render_data(obs.data)}")
+        else:
+            detail = obs.reason or obs.status
+            lines.append(f"{index}. {obs.capability_id} -> {obs.status}: {detail}")
     return "\n".join(lines)
 
 

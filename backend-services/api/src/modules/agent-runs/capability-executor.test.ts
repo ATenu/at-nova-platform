@@ -57,7 +57,15 @@ function executor(): { executor: CapabilityExecutor; services: MockServices } {
       addComment: jest.fn(async () => ({ id: 'cm-1', comment: 'looks good' })),
       updateAction: jest.fn(async () => ({ id: ACTION_ID, title: 'Investigate', status: 'in_progress' })),
     },
-    sops: {},
+    sops: {
+      listSops: jest.fn(async () => ({
+        items: [
+          { id: 'sop-1', name: 'Refund of purchase', description: '7-day window', active: true },
+          { id: 'sop-2', name: 'Defective product replacement', description: '1-year window', active: true },
+        ],
+        total: 2,
+      })),
+    },
   };
   return {
     executor: new CapabilityExecutor(services as unknown as CapabilityServices),
@@ -149,5 +157,58 @@ describe('CapabilityExecutor writes', () => {
   it('rejects a capability with no executor (default deny)', async () => {
     const { executor: exec } = executor();
     await expect(exec.execute('unknown.capability', {}, auth())).rejects.toBeInstanceOf(ValidationError);
+  });
+});
+
+describe('CapabilityExecutor list summaries carry grounded detail', () => {
+  it('sop.read (list) names the SOPs and returns their full records', async () => {
+    const { executor: exec } = executor();
+    const result = await exec.execute('sop.read', {}, auth());
+    expect(result.capabilityId).toBe('sop.read');
+    // The headline summary is no longer a bare count — it names the SOPs.
+    expect(result.summary).toContain('2 SOP(s) available');
+    expect(result.summary).toContain('Refund of purchase');
+    // The full records (incl. descriptions) are carried for grounding.
+    expect(JSON.stringify(result.data)).toContain('7-day window');
+  });
+
+  it('sales.list surfaces payment status in the summary and data', async () => {
+    const { executor: exec, services } = executor();
+    services.sales.listSales.mockResolvedValueOnce({
+      items: [
+        {
+          id: 'sale-aaaaaaaa',
+          customerId: CUSTOMER_ID,
+          date: '2026-05-26T00:00:00.000Z',
+          totalAmountReceipt: '137.75',
+          paymentReceived: false,
+        },
+      ],
+      total: 1,
+    });
+    const result = await exec.execute('sales.list', { paymentReceived: false }, auth());
+    expect(services.sales.listSales).toHaveBeenCalledWith(expect.objectContaining({ paymentReceived: false }));
+    expect(result.summary).toContain('1 sale(s) match');
+    expect(result.summary).toContain('unpaid');
+    expect(JSON.stringify(result.data)).toContain('137.75');
+  });
+
+  it('issues.list surfaces each issue status in the summary and data', async () => {
+    const { executor: exec, services } = executor();
+    services.issues.listIssues.mockResolvedValueOnce({
+      items: [
+        {
+          id: 'issue-bbbbbbbb',
+          salesId: 'sale-1',
+          status: 'in_assistance',
+          dateRaised: '2026-05-27T00:00:00.000Z',
+        },
+      ],
+      total: 1,
+    });
+    const result = await exec.execute('issues.list', {}, auth());
+    expect(result.summary).toContain('1 issue(s) match');
+    expect(result.summary).toContain('in_assistance');
+    expect(JSON.stringify(result.data)).toContain('in_assistance');
   });
 });

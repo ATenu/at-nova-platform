@@ -535,6 +535,10 @@ def _run_tool_step(deps: OrchestratorDeps, step: StepCall, index: int) -> StepRe
             )
         summary = str(result.get("summary", ""))
         links = _coerce_links(result.get("links"))
+        # Carry the full result the owner is entitled to (secret-stripped + size
+        # bounded by safe_io) so the composer can ground in the actual rows, not
+        # just the count summary. Same payload feeds the user-visible event.
+        data = safe_io(result.get("data"))
         if persisted_step is not None:
             persisted_step.status = "completed"
             persisted_step.completed_at = _now()
@@ -547,7 +551,7 @@ def _run_tool_step(deps: OrchestratorDeps, step: StepCall, index: int) -> StepRe
                 "capability": step.capability_id,
                 "summary": summary,
                 "input": safe_io(step.tool_input),
-                "output": safe_io(result.get("data")),
+                "output": data,
             },
             visibility="user",
         )
@@ -564,7 +568,9 @@ def _run_tool_step(deps: OrchestratorDeps, step: StepCall, index: int) -> StepRe
         run.last_heartbeat_at = _now()
         session.commit()
     return StepResult(
-        Observation(step.capability_id, "tool", "completed", summary=summary, links=links)
+        Observation(
+            step.capability_id, "tool", "completed", summary=summary, links=links, data=data
+        )
     )
 
 
