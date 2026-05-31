@@ -23,6 +23,9 @@ logs/
 *.log
 npm-debug.log*
 
+# Generated quality reports
+test-quality/nova_agentic_quality_report_*.xlsx
+
 # Editor / OS
 .DS_Store
 Thumbs.db
