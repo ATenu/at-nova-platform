@@ -1,3 +1,4 @@
+import { AppBrand } from '@/components/layout/AppBrand';
 import { Icon } from '@/components/ui/Icon';
 
 /** Full-viewport status screen used during boot, redirect, and fatal errors. */
@@ -22,10 +23,7 @@ export function FullScreenState({
       }}
     >
       <div className="stack" style={{ alignItems: 'center', textAlign: 'center', maxWidth: 420 }}>
-        <div className="row" style={{ gap: 10 }}>
-          <img src="/nova.svg" width={34} height={34} alt="" />
-          <span style={{ fontWeight: 720, fontSize: 20 }}>Nova</span>
-        </div>
+        <AppBrand variant="hero" />
         {variant === 'loading' ? (
           <span
             className="spinner"

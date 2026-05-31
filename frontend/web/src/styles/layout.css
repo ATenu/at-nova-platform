@@ -19,19 +19,56 @@
   overflow-y: auto;
 }
 .sidebar-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
   padding: 10px 10px 14px;
 }
-.sidebar-brand img {
-  width: 30px;
-  height: 30px;
+
+/* Logo + name (+ tagline on hero surfaces) */
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
-.sidebar-brand .brand-name {
-  font-weight: 720;
+.app-brand__logo {
+  flex: none;
+  display: block;
+}
+.app-brand__copy {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+}
+.app-brand__name {
+  color: var(--text);
+  line-height: 1.15;
+}
+.app-brand--hero .app-brand__name {
+  font-size: 22px;
+  font-weight: 760;
+  letter-spacing: -0.02em;
+}
+.app-brand--compact .app-brand__name {
   font-size: 17px;
+  font-weight: 720;
   letter-spacing: -0.01em;
+}
+.app-brand__tagline {
+  margin: 0;
+  max-width: 20rem;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.42;
+  letter-spacing: 0.012em;
+  color: var(--text-muted);
+}
+.app-brand__tagline--compact {
+  max-width: 12.5rem;
+  font-size: 9.5px;
+  line-height: 1.38;
+  letter-spacing: 0.008em;
+  color: var(--text-subtle);
 }
 .nav-group-label {
   font-size: 10.5px;

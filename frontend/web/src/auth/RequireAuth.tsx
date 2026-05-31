@@ -1,4 +1,3 @@
-import { useEffect } from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from './AuthProvider';
 import { FullScreenState } from '@/components/layout/FullScreenState';
@@ -10,14 +9,8 @@ import { FullScreenState } from '@/components/layout/FullScreenState';
  * the backend independently authorizes every request.
  */
 export function RequireAuth() {
-  const { status, user, isLoadingUser, userError, useMocks, login, refetchUser } = useAuth();
+  const { status, user, isLoadingUser, userError, refetchUser } = useAuth();
   const location = useLocation();
-
-  useEffect(() => {
-    if (status === 'unauthenticated' && !useMocks) {
-      login();
-    }
-  }, [status, useMocks, login]);
 
   if (status === 'initializing') {
     return <FullScreenState variant="loading" message="Starting Nova…" />;
@@ -34,10 +27,7 @@ export function RequireAuth() {
   }
 
   if (status === 'unauthenticated') {
-    if (useMocks) {
-      return <Navigate to="/login" replace state={{ from: location.pathname }} />;
-    }
-    return <FullScreenState variant="loading" message="Redirecting to sign in…" />;
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
 
   if (isLoadingUser) {

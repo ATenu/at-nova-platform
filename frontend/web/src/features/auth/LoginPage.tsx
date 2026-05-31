@@ -7,7 +7,7 @@ import { Avatar } from '@/components/ui/Avatar';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
-import { env } from '@/lib/env';
+import { AppBrand } from '@/components/layout/AppBrand';
 
 /**
  * Login screen. In real deployments this immediately hands off to Keycloak. In
@@ -26,7 +26,7 @@ export function LoginPage() {
 
   return (
     <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24 }}>
-      <div className="card" style={{ width: '100%', maxWidth: 460, overflow: 'hidden' }}>
+      <div className="card" style={{ width: '100%', maxWidth: 500, overflow: 'hidden' }}>
         <div
           style={{
             padding: '28px 28px 22px',
@@ -34,15 +34,7 @@ export function LoginPage() {
             borderBottom: '1px solid var(--border)',
           }}
         >
-          <div className="row" style={{ gap: 12 }}>
-            <img src="/nova.svg" width={40} height={40} alt="" />
-            <div className="stack" style={{ gap: 2 }}>
-              <span style={{ fontWeight: 760, fontSize: 22, letterSpacing: '-0.02em' }}>
-                {env.appName}
-              </span>
-              <span className="muted text-sm">Operations & customer support platform</span>
-            </div>
-          </div>
+          <AppBrand variant="hero" />
         </div>
 
         <div className="card-body stack">

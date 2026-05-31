@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '@/auth/AuthProvider';
+import { AppBrand } from '@/components/layout/AppBrand';
 import { Icon } from '@/components/ui/Icon';
 import type { NovaPermission } from '@/auth/permissions';
 import { NAV_GROUPS, type NavItem } from './navigation';
@@ -16,8 +17,7 @@ export function Sidebar({ open, onNavigate }: { open: boolean; onNavigate: () =>
       <div className={`sidebar-backdrop ${open ? 'open' : ''}`} onClick={onNavigate} role="presentation" />
       <aside className={`sidebar ${open ? 'open' : ''}`} aria-label="Primary navigation">
         <div className="sidebar-brand">
-          <img src="/nova.svg" alt="" />
-          <span className="brand-name">Nova</span>
+          <AppBrand variant="compact" />
         </div>
 
         {NAV_GROUPS.map((group) => {

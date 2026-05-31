@@ -27,7 +27,8 @@ function createKeycloakSession(): AuthSession {
     async init() {
       if (!initialized) {
         await keycloak.init({
-          onLoad: 'login-required',
+          // check-sso lets the app show /login (branding + tagline) before redirecting.
+          onLoad: 'check-sso',
           pkceMethod: 'S256',
           checkLoginIframe: false,
         });

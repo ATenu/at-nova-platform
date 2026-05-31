@@ -1,6 +1,7 @@
 {
   "realm": "nova",
   "displayName": "Nova",
+  "displayNameHtml": "<div style=\"text-align:center;line-height:1.4;\"><div style=\"font-size:1.2rem;font-weight:600;letter-spacing:-0.02em;\">Nova</div><div style=\"font-size:0.72rem;font-weight:400;opacity:0.88;margin-top:0.2rem;max-width:18rem;margin-left:auto;margin-right:auto;\">Next-Generation Operations &amp; Virtual Assistance</div></div>",
   "enabled": true,
   "loginWithEmailAllowed": true,
   "duplicateEmailsAllowed": false,
