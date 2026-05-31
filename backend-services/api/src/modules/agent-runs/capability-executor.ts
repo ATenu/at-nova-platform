@@ -153,6 +153,8 @@ export class CapabilityExecutor {
     switch (capabilityId) {
       case 'sales.report.customer':
         return this.salesReport(rawInput);
+      case 'sales.products.forCustomer':
+        return this.customerProducts(rawInput);
       case 'issues.list.pendingForCustomer':
         return this.pendingIssues(rawInput);
       case 'actions.next':
@@ -221,6 +223,28 @@ export class CapabilityExecutor {
       capabilityId: 'sales.report.customer',
       summary: `${customer.fullName} has ${sales.total} sale(s) on record.`,
       data: { customer, sales: sales.items, totalSales: sales.total },
+      links: [{ label: `Open ${customer.fullName}`, href: `nova://customer/${customerId}`, type: 'customer' }],
+    };
+  }
+
+  private async customerProducts(input: unknown): Promise<ToolCallResult> {
+    const { customerId } = this.parse(customerIdInput, input);
+    // Resource-scoped: resolve (and authorize existence of) the customer first,
+    // mirroring sales.report.customer, then aggregate their purchased products.
+    const customer = await this.services.customers.getCustomerById(customerId);
+    const result = await this.services.sales.productsForCustomer(customerId);
+    const preview = result.products
+      .slice(0, RESOLVER_PREVIEW)
+      .map((product) => `${product.name} x${product.totalQuantity}`)
+      .join('; ');
+    const summary =
+      result.totalProducts === 0
+        ? `${customer.fullName} has not purchased any products.`
+        : `${customer.fullName} purchased ${result.totalProducts} distinct product(s)${preview ? `: ${preview}` : ''}.`;
+    return {
+      capabilityId: 'sales.products.forCustomer',
+      summary,
+      data: { customer, ...result },
       links: [{ label: `Open ${customer.fullName}`, href: `nova://customer/${customerId}`, type: 'customer' }],
     };
   }

@@ -19,7 +19,7 @@ function auth(): AuthContext {
 interface MockServices {
   readonly customers: { listCustomers: jest.Mock; getCustomerById: jest.Mock };
   readonly products: { listProducts: jest.Mock; getProductById: jest.Mock };
-  readonly sales: { listSales: jest.Mock; getSaleById: jest.Mock };
+  readonly sales: { listSales: jest.Mock; getSaleById: jest.Mock; productsForCustomer: jest.Mock };
   readonly issues: { listIssues: jest.Mock; getIssueById: jest.Mock; updateIssue: jest.Mock };
   readonly actions: { addComment: jest.Mock; updateAction: jest.Mock };
   readonly sops: Record<string, jest.Mock>;
@@ -40,7 +40,18 @@ function executor(): { executor: CapabilityExecutor; services: MockServices } {
       })),
     },
     products: { listProducts: jest.fn(), getProductById: jest.fn() },
-    sales: { listSales: jest.fn(), getSaleById: jest.fn() },
+    sales: {
+      listSales: jest.fn(),
+      getSaleById: jest.fn(),
+      productsForCustomer: jest.fn(async () => ({
+        customerId: CUSTOMER_ID,
+        products: [
+          { productId: 'p-1', name: 'Alpha', category: 'core', price: '200.00', totalQuantity: 3, saleCount: 2 },
+          { productId: 'p-2', name: 'Beta', category: 'core', price: '50.00', totalQuantity: 1, saleCount: 1 },
+        ],
+        totalProducts: 2,
+      })),
+    },
     issues: { listIssues: jest.fn(), getIssueById: jest.fn(), updateIssue: jest.fn() },
     actions: {
       addComment: jest.fn(async () => ({ id: 'cm-1', comment: 'looks good' })),
@@ -71,6 +82,25 @@ describe('CapabilityExecutor resolvers', () => {
     await expect(exec.execute('customers.get', { customerId: 'not-a-uuid' }, auth())).rejects.toBeInstanceOf(
       ValidationError,
     );
+  });
+
+  it('sales.products.forCustomer resolves the customer then aggregates their products', async () => {
+    const { executor: exec, services } = executor();
+    const result = await exec.execute('sales.products.forCustomer', { customerId: CUSTOMER_ID }, auth());
+    // Resource-scoped: the customer is resolved (existence-checked) first.
+    expect(services.customers.getCustomerById).toHaveBeenCalledWith(CUSTOMER_ID);
+    expect(services.sales.productsForCustomer).toHaveBeenCalledWith(CUSTOMER_ID);
+    expect(result.capabilityId).toBe('sales.products.forCustomer');
+    expect(result.summary).toContain('2 distinct product(s)');
+    expect(result.summary).toContain('Alpha');
+    expect(JSON.stringify(result.data)).toContain('p-1');
+  });
+
+  it('sales.products.forCustomer rejects a non-uuid customer id', async () => {
+    const { executor: exec } = executor();
+    await expect(
+      exec.execute('sales.products.forCustomer', { customerId: 'not-a-uuid' }, auth()),
+    ).rejects.toBeInstanceOf(ValidationError);
   });
 });
 

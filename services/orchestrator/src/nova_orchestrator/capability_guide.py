@@ -116,6 +116,28 @@ _TOOL_SPECS: dict[str, CapabilityToolSpec] = {
             "additionalProperties": False,
         },
     ),
+    "sales.products.forCustomer": CapabilityToolSpec(
+        capability_id="sales.products.forCustomer",
+        summary=(
+            "List every distinct product a specific customer has purchased (by "
+            "customerId UUID), with the total quantity and number of sales per product."
+        ),
+        when_to_use=(
+            "When the user asks which products a named customer bought, or for their "
+            "product purchase history, AND a customerId UUID is known (resolve the name "
+            "via customers.search first). One call returns the full product list — "
+            "prefer it over inspecting each sale individually."
+        ),
+        input_fields=("customerId",),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "customerId": {"type": "string", "description": "Customer UUID."},
+            },
+            "required": ["customerId"],
+            "additionalProperties": False,
+        },
+    ),
     "issues.list.pendingForCustomer": CapabilityToolSpec(
         capability_id="issues.list.pendingForCustomer",
         summary="List pending issues for one specific customer (by UUID).",

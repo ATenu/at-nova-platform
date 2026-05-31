@@ -64,7 +64,8 @@ function SubstepRow({ item }: { item: TraceItem }) {
         ) : (
           <span className="run-trace-substep-dot" aria-hidden />
         )}
-        <span className="text-sm">{item.line}</span>
+        <span className="run-trace-substep-line text-sm">{item.line}</span>
+        {item.status ? <StatusBadge status={item.status} /> : null}
       </button>
       {hasIo && open ? (
         <div className="run-trace-substep-body">
@@ -187,7 +188,10 @@ function TraceViewBody({
             <InvocationRow
               key={invocation.id}
               invocation={invocation}
-              defaultOpen={live === true && invocation.status === 'running'}
+              defaultOpen={
+                invocation.substeps.length > 0 ||
+                (live === true && invocation.status === 'running')
+              }
             />
           ))}
         </ol>

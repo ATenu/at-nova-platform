@@ -130,6 +130,7 @@ describe('capability catalog', () => {
       'customers.get',
       'products.search',
       'products.get',
+      'sales.products.forCustomer',
       'sales.list',
       'sales.get',
       'issues.list',

@@ -1,20 +1,23 @@
 import type { AgentRunEventDto } from '@/api/types';
 
+export type InvocationStatus = 'running' | 'completed' | 'failed';
+
 /**
  * A single user-visibility run event rendered as a trackable activity item.
  * `input`/`output` are the bounded, secret-redacted payloads the backend
  * attaches to tool/agent calls; they are only present when the event carries
- * them and are rendered as plain text (never HTML).
+ * them and are rendered as plain text (never HTML). `status` is set for
+ * agent-internal sub-steps (queries, writes, schema loads) once their
+ * start/terminal events have been merged into a single operation.
  */
 export interface TraceItem {
   readonly id: string;
   readonly line: string;
   readonly kind: 'tool' | 'agent' | 'lifecycle';
+  readonly status?: InvocationStatus;
   readonly input?: unknown;
   readonly output?: unknown;
 }
-
-export type InvocationStatus = 'running' | 'completed' | 'failed';
 
 /**
  * One tool or agent invocation with merged input/output from its start and
@@ -60,6 +63,27 @@ function isAgentInternalEvent(type: string): boolean {
 
 function invocationStatusFromTerminal(type: string): InvocationStatus {
   return type.endsWith('.completed') ? 'completed' : 'failed';
+}
+
+/**
+ * Operation family for an agent-internal event, used to pair a `*.started`
+ * event with its terminal (`*.completed` / `*.failed` / `*.rejected` /
+ * `*.denied`). e.g. `agent.query.started` -> `agent.query`.
+ */
+function operationFamily(type: string): string {
+  const lastDot = type.lastIndexOf('.');
+  return lastDot > 0 ? type.slice(0, lastDot) : type;
+}
+
+/** Map an agent-internal sub-step event to a running/completed/failed status. */
+function substepStatus(type: string): InvocationStatus {
+  if (type.endsWith('.started')) {
+    return 'running';
+  }
+  if (type.endsWith('.completed') || type.endsWith('.loaded')) {
+    return 'completed';
+  }
+  return 'failed';
 }
 
 function toolLabel(capability: string, status: InvocationStatus): string {
@@ -200,12 +224,45 @@ export function buildTraceView(events: readonly AgentRunEventDto[]): TraceView {
   const invocations: TraceInvocation[] = [];
   let openTool: TraceInvocation | null = null;
   let openAgent: TraceInvocation | null = null;
+  // Sub-steps for the currently open agent. `openSubsteps` is the live array
+  // referenced by `openAgent.substeps`; `runningOps` maps an operation family
+  // to its index so a terminal event merges into its `*.started` sub-step.
+  let openSubsteps: TraceItem[] = [];
+  let runningOps = new Map<string, number>();
 
   const pushLifecycle = (event: AgentRunEventDto): void => {
     const described = describeEvent(event);
     if (described) {
       lifecycle.push({ id: event.id, ...described });
     }
+  };
+
+  const addAgentSubstep = (event: AgentRunEventDto): void => {
+    const described = describeEvent(event);
+    if (!described) {
+      return;
+    }
+    const status = substepStatus(event.type);
+    const family = operationFamily(event.type);
+    const runningIndex = runningOps.get(family);
+    if (status === 'running') {
+      runningOps.set(family, openSubsteps.length);
+      openSubsteps.push({ id: event.id, ...described, status });
+      return;
+    }
+    if (runningIndex !== undefined) {
+      const prev = openSubsteps[runningIndex]!;
+      openSubsteps[runningIndex] = {
+        ...prev,
+        line: described.line,
+        status,
+        input: prev.input ?? described.input,
+        output: described.output ?? prev.output,
+      };
+      runningOps.delete(family);
+      return;
+    }
+    openSubsteps.push({ id: event.id, ...described, status });
   };
 
   for (const event of events) {
@@ -260,6 +317,8 @@ export function buildTraceView(events: readonly AgentRunEventDto[]): TraceView {
         break;
       }
       case 'agent.call.started': {
+        openSubsteps = [];
+        runningOps = new Map<string, number>();
         openAgent = {
           id: event.id,
           kind: 'agent',
@@ -268,7 +327,7 @@ export function buildTraceView(events: readonly AgentRunEventDto[]): TraceView {
           agent,
           status: 'running',
           input: payload.input,
-          substeps: [],
+          substeps: openSubsteps,
         };
         invocations.push(openAgent);
         break;
@@ -311,16 +370,7 @@ export function buildTraceView(events: readonly AgentRunEventDto[]): TraceView {
       }
       default: {
         if (openAgent && isAgentInternalEvent(event.type)) {
-          const described = describeEvent(event);
-          if (described) {
-            const current: TraceInvocation = openAgent;
-            const substeps: readonly TraceItem[] = [
-              ...current.substeps,
-              { id: event.id, ...described },
-            ];
-            openAgent = { ...current, substeps };
-            invocations[invocations.length - 1] = openAgent;
-          }
+          addAgentSubstep(event);
         } else {
           pushLifecycle(event);
         }
@@ -331,15 +381,30 @@ export function buildTraceView(events: readonly AgentRunEventDto[]): TraceView {
   return { lifecycle, invocations };
 }
 
-/** Count distinct tool and agent invocations (one row per call, not per event). */
+/**
+ * Count tool and agent activity for the header badge. A "tool" is any direct
+ * gateway tool call (`tool.call.*`) plus every agent-internal operation
+ * (each merged MCP query, schema load, or capability write sub-step) — these
+ * are the real tool invocations the agent performed on the user's behalf.
+ * Agents are counted once per `agent.call.*` invocation.
+ */
 export function summarizeEvents(events: readonly AgentRunEventDto[]): TraceSummary {
   const view = buildTraceView(events);
-  const toolCount = view.invocations.filter((inv) => inv.kind === 'tool').length;
-  const agentCount = view.invocations.filter((inv) => inv.kind === 'agent').length;
+  let toolCount = 0;
+  let agentCount = 0;
+  let substepCount = 0;
+  for (const inv of view.invocations) {
+    if (inv.kind === 'tool') {
+      toolCount += 1;
+    } else {
+      agentCount += 1;
+    }
+    substepCount += inv.substeps.length;
+  }
   return {
-    toolCount,
+    toolCount: toolCount + substepCount,
     agentCount,
-    stepCount: view.lifecycle.length + view.invocations.length,
+    stepCount: view.lifecycle.length + view.invocations.length + substepCount,
   };
 }
 
@@ -359,6 +424,8 @@ export function formatIo(value: unknown): string {
   try {
     return JSON.stringify(value, null, 2);
   } catch {
-    return String(value);
+    // Non-serializable payloads (e.g. circular references) are never expected
+    // from the redacted backend IO, but fail safe rather than throw in render.
+    return typeof value === 'string' ? value : '[unserializable value]';
   }
 }

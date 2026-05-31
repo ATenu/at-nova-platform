@@ -42,6 +42,14 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         resource_scoped=True,
     ),
     CapabilityDescriptor(
+        id="sales.products.forCustomer",
+        kind="agent-skill",
+        mode="read",
+        required_permissions=("read-sales", "read-customers",),
+        risk="low",
+        resource_scoped=True,
+    ),
+    CapabilityDescriptor(
         id="sales.create",
         kind="agent-skill",
         mode="write",

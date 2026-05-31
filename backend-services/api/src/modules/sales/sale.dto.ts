@@ -24,6 +24,23 @@ export interface SaleDto {
   readonly updatedAt: string;
 }
 
+/** A distinct product a customer purchased, with quantity/sale totals. */
+export interface CustomerProductPurchaseDto {
+  readonly productId: string;
+  readonly name: string;
+  readonly category: string;
+  readonly price: string;
+  readonly totalQuantity: number;
+  readonly saleCount: number;
+}
+
+/** The full set of products a customer has purchased across their sales. */
+export interface CustomerProductsDto {
+  readonly customerId: string;
+  readonly products: readonly CustomerProductPurchaseDto[];
+  readonly totalProducts: number;
+}
+
 export function toProductSoldDto(productSold: ProductSold): ProductSoldDto {
   return {
     saleId: productSold.saleId,

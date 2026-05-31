@@ -520,23 +520,47 @@ export const handlers = [
       {
         id: nextId('evt'),
         sequence: 2,
-        type: 'tool.call.started',
-        payload: { capability: 'sales.read', input: { query: body.message } },
+        type: 'agent.call.started',
+        payload: {
+          capability: 'data.analyse.read',
+          agent: 'at-sql-analyser',
+          input: { goal: body.message },
+        },
         createdAt: ts(),
       },
       {
         id: nextId('evt'),
         sequence: 3,
-        type: 'tool.call.completed',
+        type: 'agent.schema.loaded',
+        payload: { viewCount: 10 },
+        createdAt: ts(),
+      },
+      {
+        id: nextId('evt'),
+        sequence: 4,
+        type: 'agent.query.started',
+        payload: { sqlHash: 'sha256:demo' },
+        createdAt: ts(),
+      },
+      {
+        id: nextId('evt'),
+        sequence: 5,
+        type: 'agent.query.completed',
+        payload: { sqlHash: 'sha256:demo', rowCount: 1, truncated: false, error: false },
+        createdAt: ts(),
+      },
+      {
+        id: nextId('evt'),
+        sequence: 6,
+        type: 'agent.call.completed',
         payload: {
-          capability: 'sales.read',
-          summary: reply.message.text,
-          input: { query: body.message },
-          output: { preview: reply.message.text.slice(0, 120) },
+          capability: 'data.analyse.read',
+          agent: 'at-sql-analyser',
+          output: { answer: reply.message.text.slice(0, 120) },
         },
         createdAt: ts(),
       },
-      { id: nextId('evt'), sequence: 4, type: 'run.completed', payload: {}, createdAt: ts() },
+      { id: nextId('evt'), sequence: 7, type: 'run.completed', payload: {}, createdAt: ts() },
     ];
     agentRunsStore.set(runId, { run, events });
 

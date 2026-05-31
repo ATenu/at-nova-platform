@@ -334,6 +334,13 @@
 .run-trace-substep-toggle:disabled {
   cursor: default;
 }
+.run-trace-substep-line {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .run-trace-substep-dot {
   width: 6px;
   height: 6px;

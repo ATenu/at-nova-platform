@@ -3,7 +3,7 @@ import { buildPaginatedResult, type PaginatedResult } from '../../http/paginatio
 import { computeReceiptTotalCents, decimalToScaledBigInt, scaledBigIntToDecimal } from '../../lib/money';
 import type { CustomerRepository } from '../customers/customer.repository';
 import type { ProductRepository } from '../products/product.repository';
-import { toSaleDto, type SaleDto } from './sale.dto';
+import { toSaleDto, type CustomerProductsDto, type SaleDto } from './sale.dto';
 import type { CreateSaleData, SaleListFilter, SaleRepository } from './sale.repository';
 
 export interface CreateSaleInput {
@@ -37,6 +37,12 @@ export class SaleService {
       throw new NotFoundError('Sale not found.');
     }
     return toSaleDto(sale);
+  }
+
+  /** Distinct products a customer purchased across all their sales (aggregated). */
+  async productsForCustomer(customerId: string): Promise<CustomerProductsDto> {
+    const products = await this.sales.aggregateProductsForCustomer(customerId);
+    return { customerId, products, totalProducts: products.length };
   }
 
   async createSale(input: CreateSaleInput): Promise<SaleDto> {

@@ -109,6 +109,17 @@
       "resourceScoped": true
     },
     {
+      "id": "sales.products.forCustomer",
+      "kind": "agent-skill",
+      "mode": "read",
+      "requiredPermissions": [
+        "read-sales",
+        "read-customers"
+      ],
+      "risk": "low",
+      "resourceScoped": true
+    },
+    {
       "id": "sales.create",
       "kind": "agent-skill",
       "mode": "write",

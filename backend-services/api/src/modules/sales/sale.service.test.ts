@@ -27,6 +27,9 @@ function buildService(captured: { data?: CreateSaleData }) {
       updatedAt: new Date(),
       productsSold: [],
     }),
+    aggregateProductsForCustomer: jest.fn().mockResolvedValue([
+      { productId: 'p-alpha', name: 'Alpha', category: 'core', price: '200.00', totalQuantity: 3, saleCount: 2 },
+    ]),
   } as unknown as SaleRepository;
   const products = {
     findByIds: jest.fn().mockResolvedValue([product('p-alpha', '200.00'), product('p-delta', '15.00')]),
@@ -87,5 +90,18 @@ describe('SaleService.createSale', () => {
         items: [{ productId: 'ghost', quantity: 1 }],
       }),
     ).rejects.toBeInstanceOf(ValidationError);
+  });
+});
+
+describe('SaleService.productsForCustomer', () => {
+  it('returns the aggregated products with a total count', async () => {
+    const { service, sales } = buildService({});
+
+    const result = await service.productsForCustomer('c1');
+
+    expect(sales.aggregateProductsForCustomer).toHaveBeenCalledWith('c1');
+    expect(result.customerId).toBe('c1');
+    expect(result.totalProducts).toBe(1);
+    expect(result.products[0]).toMatchObject({ name: 'Alpha', totalQuantity: 3, saleCount: 2 });
   });
 });

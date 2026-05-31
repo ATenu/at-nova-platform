@@ -55,6 +55,17 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     resourceScoped: true,
   },
   {
+    // Aggregates the line items of a customer's sales into the distinct products
+    // they purchased. Mirrors the read permissions of `sales.report.customer`
+    // (touches both the customer and their sales/line items).
+    id: 'sales.products.forCustomer',
+    kind: 'agent-skill',
+    mode: 'read',
+    requiredPermissions: ['read-sales', 'read-customers'],
+    risk: 'low',
+    resourceScoped: true,
+  },
+  {
     id: 'sales.create',
     kind: 'agent-skill',
     mode: 'write',
