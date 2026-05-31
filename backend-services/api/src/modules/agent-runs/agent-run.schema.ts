@@ -25,5 +25,10 @@ export const listEventsQuerySchema = z.object({
 });
 export type ListEventsQuery = z.infer<typeof listEventsQuerySchema>;
 
+export const listRunsQuerySchema = z.object({
+  conversationId: z.string().uuid(),
+});
+export type ListRunsQuery = z.infer<typeof listRunsQuerySchema>;
+
 /** Idempotency-Key header contract for run submission. */
 export const idempotencyKeySchema = z.string().trim().min(1).max(255);

@@ -29,7 +29,7 @@ import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -37,15 +37,18 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from .agent_client import AgentClient, AgentClientError
+from .agent_state import AgentStateStore, HistoryEntry, render_history
 from .agents import AgentRegistry
 from .authz.policy_gate import REASON_ALLOWED, evaluate_capability
 from .authz.registry import get_capability
 from .authz.snapshot import EntitlementSnapshot
 from .capability_guide import CapabilityToolSpec, spec_for, tool_name_for
+from .content_policy import resolve_text
 from .dag import MenuItem, Observation, OrchestrationState
-from .events import emit_event, enqueue_webhook_if_configured, record_audit, set_run_status
+from .events import emit_event, record_audit, safe_io, set_run_status
 from .llm import Reasoner
 from .models import AgentRun, AgentStep
+from .observability import langfuse_tracing as lf
 from .tool_gateway import ToolGatewayClient, ToolGatewayError
 
 WORKER_ACTOR = "nova-celery-worker"
@@ -76,6 +79,10 @@ class OrchestratorDeps:
     max_steps: int
     agent_client: AgentClient | None = None
     registry: AgentRegistry | None = None
+    # Shared agent working-state + aligned conversation history (redis-agent).
+    # Optional: ``None`` keeps the orchestrator stateless/single-turn as before.
+    state_store: AgentStateStore | None = None
+    history_read_limit: int = 20
 
 
 def _now() -> datetime:
@@ -156,10 +163,12 @@ def build_graph(deps: OrchestratorDeps) -> CompiledStateGraph:
             prompt = deps.gateway.get_prompt(deps.run_id)
         except ToolGatewayError:
             prompt = ""
+        conversation_id = ""
         with deps.session_factory() as session:
             run = _lock_and_load(session, deps.run_id)
             if run is None or run.status in TERMINAL_STATUSES:
                 return {"route": "end", "status": run.status if run else "missing"}
+            conversation_id = run.conversation_id or ""
             emit_event(session, run, event_type="planner.started", payload={}, visibility="user")
             emit_event(
                 session,
@@ -170,7 +179,16 @@ def build_graph(deps: OrchestratorDeps) -> CompiledStateGraph:
             )
             run.last_heartbeat_at = _now()
             session.commit()
-        return {"prompt": prompt, "iteration": 0, "route": "reason", "observations": []}
+        # Aligned multi-turn context from redis-agent (fail-soft, read-only here).
+        history = _load_history(deps, conversation_id)
+        return {
+            "prompt": prompt,
+            "conversation_id": conversation_id,
+            "history": history,
+            "iteration": 0,
+            "route": "reason",
+            "observations": [],
+        }
 
     def reason(state: OrchestrationState) -> dict[str, Any]:
         iteration = int(state.get("iteration", 0))
@@ -180,6 +198,7 @@ def build_graph(deps: OrchestratorDeps) -> CompiledStateGraph:
             prompt=state.get("prompt", ""),
             menu=menu,
             observations=list(state.get("observations", [])),
+            history=state.get("history", ""),
         )
         capability_id = decision.capability_id.strip()
         if decision.action == "finish" or not capability_id:
@@ -213,13 +232,19 @@ def build_graph(deps: OrchestratorDeps) -> CompiledStateGraph:
             state.get("decision_capability", ""), dict(state.get("decision_input", {}))
         )
         result = _run_agent_step(
-            deps, call, int(state.get("iteration", 0)), state.get("prompt", "")
+            deps,
+            call,
+            int(state.get("iteration", 0)),
+            state.get("prompt", ""),
+            state.get("conversation_id", ""),
         )
         return _after_dispatch(result)
 
     def critique(state: OrchestrationState) -> dict[str, Any]:
         outcome = deps.reasoner.critique(
-            prompt=state.get("prompt", ""), observations=list(state.get("observations", []))
+            prompt=state.get("prompt", ""),
+            observations=list(state.get("observations", [])),
+            history=state.get("history", ""),
         )
         if outcome.satisfied or not outcome.should_continue:
             return {"route": "compose"}
@@ -229,7 +254,9 @@ def build_graph(deps: OrchestratorDeps) -> CompiledStateGraph:
 
     def compose(state: OrchestrationState) -> dict[str, Any]:
         answer = deps.reasoner.compose(
-            prompt=state.get("prompt", ""), observations=list(state.get("observations", []))
+            prompt=state.get("prompt", ""),
+            observations=list(state.get("observations", [])),
+            history=state.get("history", ""),
         ).strip()
         return {"answer": answer or None, "route": "finalize"}
 
@@ -240,6 +267,14 @@ def build_graph(deps: OrchestratorDeps) -> CompiledStateGraph:
             links.extend(obs.links)
         answer = state.get("answer") or _fallback_answer(observations)
         status = _finalize_run(deps, answer, links[:20])
+        if status == "completed":
+            _record_turn(
+                deps,
+                conversation_id=state.get("conversation_id", ""),
+                prompt=state.get("prompt", ""),
+                answer=answer,
+                observations=observations,
+            )
         return {"status": status}
 
     builder = StateGraph(OrchestrationState)
@@ -332,6 +367,8 @@ def run_graph(
     max_steps: int,
     agent_client: AgentClient | None = None,
     registry: AgentRegistry | None = None,
+    state_store: AgentStateStore | None = None,
+    history_read_limit: int = 20,
 ) -> str:
     """Drive the run to a terminal status via the LangGraph DAG."""
     deps = OrchestratorDeps(
@@ -343,15 +380,46 @@ def run_graph(
         max_steps=max_steps,
         agent_client=agent_client,
         registry=registry,
+        state_store=state_store,
+        history_read_limit=history_read_limit,
     )
     compiled = build_graph(deps)
     recursion_limit = max_steps * 4 + 8
-    final: dict[str, Any] = compiled.invoke(
-        {"run_id": run_id, "observations": []},
-        config={"recursion_limit": recursion_limit},
-    )
+    # One Langfuse trace per run (deterministic id, seeded from run_id). The
+    # CallbackHandler is created INSIDE the root span so every LangGraph node and
+    # LLM generation nests under it; tool/agent hops add their own child spans and
+    # propagate this trace to the agent. Tracing is fail-soft.
+    conversation_id = _conversation_id(session_factory, run_id)
+    config: dict[str, Any] = {"recursion_limit": recursion_limit}
+    final: dict[str, Any] = {}
+    try:
+        with lf.run_trace(
+            run_id=run_id,
+            name="orchestrator.run",
+            user_id=snapshot.owner_subject,
+            session_id=conversation_id,
+        ):
+            handler = lf.make_callback_handler()
+            if handler is not None:
+                config["callbacks"] = [handler]
+            final = compiled.invoke(
+                {"run_id": run_id, "observations": []},
+                config=cast(Any, config),
+            )
+    finally:
+        lf.flush()
     status = final.get("status")
     return status if isinstance(status, str) and status else "completed"
+
+
+def _conversation_id(session_factory: sessionmaker[Session], run_id: str) -> str:
+    """Best-effort read of the conversation id for the trace session (fail-soft)."""
+    try:
+        with session_factory() as session:
+            run = session.get(AgentRun, run_id)
+            return (run.conversation_id or "") if run is not None else ""
+    except Exception:  # noqa: BLE001 - telemetry read must never break the run
+        return ""
 
 
 def _run_tool_step(deps: OrchestratorDeps, step: StepCall, index: int) -> StepResult:
@@ -411,7 +479,7 @@ def _run_tool_step(deps: OrchestratorDeps, step: StepCall, index: int) -> StepRe
             session,
             run,
             event_type="tool.call.started",
-            payload={"capability": step.capability_id},
+            payload={"capability": step.capability_id, "input": safe_io(step.tool_input)},
             visibility="user",
         )
         run.last_heartbeat_at = _now()
@@ -421,7 +489,8 @@ def _run_tool_step(deps: OrchestratorDeps, step: StepCall, index: int) -> StepRe
     error: str | None = None
     result: dict[str, Any] | None = None
     try:
-        result = gateway.execute_capability(run_id, step.capability_id, step.tool_input)
+        with lf.tool_span(f"tool:{step.capability_id}", capability=step.capability_id):
+            result = gateway.execute_capability(run_id, step.capability_id, step.tool_input)
     except ToolGatewayError as exc:
         error = f"tool_gateway_error:{exc.status_code or 'network'}"
 
@@ -442,7 +511,11 @@ def _run_tool_step(deps: OrchestratorDeps, step: StepCall, index: int) -> StepRe
                 session,
                 run,
                 event_type="tool.call.failed",
-                payload={"capability": step.capability_id},
+                payload={
+                    "capability": step.capability_id,
+                    "input": safe_io(step.tool_input),
+                    "error": error,
+                },
                 visibility="user",
             )
             record_audit(
@@ -470,7 +543,12 @@ def _run_tool_step(deps: OrchestratorDeps, step: StepCall, index: int) -> StepRe
             session,
             run,
             event_type="tool.call.completed",
-            payload={"capability": step.capability_id, "summary": summary},
+            payload={
+                "capability": step.capability_id,
+                "summary": summary,
+                "input": safe_io(step.tool_input),
+                "output": safe_io(result.get("data")),
+            },
             visibility="user",
         )
         record_audit(
@@ -491,7 +569,11 @@ def _run_tool_step(deps: OrchestratorDeps, step: StepCall, index: int) -> StepRe
 
 
 def _run_agent_step(
-    deps: OrchestratorDeps, step: StepCall, index: int, prompt: str
+    deps: OrchestratorDeps,
+    step: StepCall,
+    index: int,
+    prompt: str,
+    conversation_id: str = "",
 ) -> StepResult:
     run_id = deps.run_id
     capability_id = step.capability_id
@@ -579,29 +661,41 @@ def _run_agent_step(
             session,
             run,
             event_type="agent.call.started",
-            payload={"capability": capability_id, "agent": agent.name},
+            payload={
+                "capability": capability_id,
+                "agent": agent.name,
+                "input": safe_io({"goal": prompt}),
+            },
             visibility="user",
         )
         run.last_heartbeat_at = _now()
         session.commit()
 
     # External A2A hop OUTSIDE the DB transaction (no locks held during network IO).
+    # Propagate the run's Langfuse trace + the current observation id so the agent
+    # joins THIS trace and nests under this dispatch span (one shared context).
     error: str | None = None
     agent_result = None
-    try:
-        agent_result = deps.agent_client.send_task(
-            base_url=agent.base_url,
-            audience_scope=agent.audience_scope,
-            receiver=agent.receiver,
-            run_id=run_id,
-            skill_id=capability_id,
-            goal=prompt,
-            correlation_id=run_id,
-            intent=intent,
-            approval_granted=approval_granted,
-        )
-    except AgentClientError as exc:
-        error = f"agent_error:{exc.status_code or 'network'}"
+    trace_id = lf.trace_id_for(run_id)
+    with lf.tool_span(f"agent:{capability_id}", capability=capability_id, agent=agent.name):
+        parent_observation_id = lf.current_observation_id()
+        try:
+            agent_result = deps.agent_client.send_task(
+                base_url=agent.base_url,
+                audience_scope=agent.audience_scope,
+                receiver=agent.receiver,
+                run_id=run_id,
+                skill_id=capability_id,
+                goal=prompt,
+                correlation_id=run_id,
+                intent=intent,
+                approval_granted=approval_granted,
+                conversation_id=conversation_id,
+                langfuse_trace_id=trace_id,
+                langfuse_parent_observation_id=parent_observation_id,
+            )
+        except AgentClientError as exc:
+            error = f"agent_error:{exc.status_code or 'network'}"
 
     with deps.session_factory() as session:
         run = _lock_and_load(session, run_id)
@@ -619,7 +713,12 @@ def _run_agent_step(
                 session,
                 run,
                 event_type="agent.call.failed",
-                payload={"capability": capability_id, "agent": agent.name},
+                payload={
+                    "capability": capability_id,
+                    "agent": agent.name,
+                    "input": safe_io({"goal": prompt}),
+                    "error": error,
+                },
                 visibility="user",
             )
             record_audit(
@@ -638,14 +737,17 @@ def _run_agent_step(
                 Observation(capability_id, "agent", "failed", reason=error)
             )
 
-        # Normalize the agent's own progress events into the run stream (internal).
+        # Normalize the agent's own progress events into the user-visible run
+        # stream so every sub-step (incl. its tool/write inputs and outputs) is
+        # tracked over SSE and delivered to the webhook. Payloads are redacted +
+        # bounded; the agent never returns raw SQL or rows.
         for event in agent_result.events:
             emit_event(
                 session,
                 run,
                 event_type=event.type,
-                payload=_safe_event_payload(event.payload),
-                visibility="internal",
+                payload=safe_io(event.payload),
+                visibility="user",
             )
 
         if agent_result.status == "completed":
@@ -662,7 +764,11 @@ def _run_agent_step(
                 session,
                 run,
                 event_type="agent.call.completed",
-                payload={"capability": capability_id, "agent": agent.name},
+                payload={
+                    "capability": capability_id,
+                    "agent": agent.name,
+                    "output": safe_io({"answer": summary}),
+                },
                 visibility="user",
             )
             record_audit(
@@ -687,7 +793,12 @@ def _run_agent_step(
             session,
             run,
             event_type="agent.call.failed",
-            payload={"capability": capability_id, "reason": reason_text},
+            payload={
+                "capability": capability_id,
+                "agent": agent.name,
+                "input": safe_io({"goal": prompt}),
+                "reason": reason_text,
+            },
             visibility="user",
         )
         record_audit(
@@ -715,15 +826,6 @@ def _mark_step_failed(persisted_step: AgentStep | None, error_code: str | None) 
         persisted_step.error_code = error_code
 
 
-def _safe_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Keep only safe primitives from an agent-provided event payload."""
-    safe: dict[str, Any] = {}
-    for key, value in payload.items():
-        if isinstance(value, bool | int | float | str) or value is None:
-            safe[key] = value
-    return safe
-
-
 def _finalize_run(
     deps: OrchestratorDeps, answer: str, links: list[dict[str, str]]
 ) -> str:
@@ -739,14 +841,69 @@ def _finalize_run(
         if run is None or run.status in TERMINAL_STATUSES:
             return run.status if run else "missing"
         set_run_status(session, run, "completed")
-        completed = emit_event(
-            session, run, event_type="run.completed", payload={}, visibility="user"
-        )
-        session.flush()
-        enqueue_webhook_if_configured(session, run, completed)
+        # emit_event enqueues the webhook for every user event (incl. this one).
+        emit_event(session, run, event_type="run.completed", payload={}, visibility="user")
         run.last_heartbeat_at = _now()
         session.commit()
     return "completed"
+
+
+def _load_history(deps: OrchestratorDeps, conversation_id: str) -> str:
+    """Read prior turns from redis-agent and render them for prompt grounding.
+
+    Fail-soft: any store error yields an empty block, so the run proceeds exactly
+    as it does today when no shared state is configured.
+    """
+    if deps.state_store is None or not conversation_id:
+        return ""
+    entries = deps.state_store.read_history(
+        conversation_id, limit=deps.history_read_limit
+    )
+    return render_history(entries)
+
+
+def _record_turn(
+    deps: OrchestratorDeps,
+    *,
+    conversation_id: str,
+    prompt: str,
+    answer: str,
+    observations: list[Observation],
+) -> None:
+    """Append the user + assistant turn to the aligned conversation history.
+
+    The orchestrator is the SINGLE writer of history (consistency). Content is
+    entitlement-gated: the user's own prompt and the composed answer (grounded
+    only in capabilities the owner was entitled to run) are stored in full — no
+    PII redaction for an entitled owner — while secrets are always stripped.
+    """
+    store = deps.state_store
+    if store is None or not conversation_id:
+        return
+    run_id = deps.run_id
+    snapshot = deps.snapshot
+    user_text = resolve_text(prompt, snapshot=snapshot)
+    store.append_history(
+        conversation_id,
+        HistoryEntry(role="user", content=user_text, run_id=run_id),
+    )
+    store.append_history(
+        conversation_id,
+        HistoryEntry(role="assistant", content=resolve_text(answer, snapshot=snapshot),
+                     run_id=run_id),
+    )
+    # The orchestrator's own per-run section: a de-identified trace of what ran.
+    store.write_section(
+        run_id,
+        "orchestrator",
+        {
+            "observations": [
+                {"capability": obs.capability_id, "status": obs.status, "summary": obs.summary}
+                for obs in observations
+            ],
+            "answer": resolve_text(answer, snapshot=snapshot),
+        },
+    )
 
 
 def _fallback_answer(observations: list[Observation]) -> str:

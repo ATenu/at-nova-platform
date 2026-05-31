@@ -251,6 +251,8 @@ export interface AgentRunDto {
   readonly conversationId: string | null;
   readonly cancelRequested: boolean;
   readonly finalResponse: string | null;
+  /** Assistant message id this run finalized to, or `null` if not finalized. */
+  readonly responseMessageId: string | null;
   readonly eventsUrl: string;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -263,6 +265,13 @@ export interface AgentRunEventDto {
   readonly type: string;
   readonly payload: Record<string, unknown>;
   readonly createdAt: string;
+}
+
+/** Full ordered `user`-visibility trace for a completed run. */
+export interface AgentRunTraceDto {
+  readonly runId: string;
+  readonly status: AgentRunStatus;
+  readonly events: readonly AgentRunEventDto[];
 }
 
 export interface CreateAgentRunRequest {

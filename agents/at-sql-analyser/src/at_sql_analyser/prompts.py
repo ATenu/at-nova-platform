@@ -145,16 +145,25 @@ def render_history(history: Sequence[QueryAttempt], *, include_rows: bool) -> st
 
 
 def propose_query_user(
-    *, goal: str, schema: Sequence[SchemaView], history: Sequence[QueryAttempt]
+    *,
+    goal: str,
+    schema: Sequence[SchemaView],
+    history: Sequence[QueryAttempt],
+    conversation_history: str = "",
 ) -> str:
-    return "\n\n".join(
+    sections = [_data_block("QUESTION", goal)]
+    if conversation_history:
+        sections.append(
+            _data_block("CONVERSATION HISTORY (prior turns, context only)", conversation_history)
+        )
+    sections.extend(
         [
-            _data_block("QUESTION", goal),
             _data_block("SCHEMA", render_schema(schema)),
             _data_block("HISTORY", render_history(history, include_rows=True)),
             "Decide the next step (propose one SELECT or finish).",
         ]
     )
+    return "\n\n".join(sections)
 
 
 def critique_user(*, goal: str, history: Sequence[QueryAttempt]) -> str:

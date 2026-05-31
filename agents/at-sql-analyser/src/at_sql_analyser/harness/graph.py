@@ -29,6 +29,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from ..mcp.data_client import DataClient, DataClientError
+from ..observability import langfuse_tracing as lf
 from ..tools.capability_client import CapabilityClient, CapabilityClientError
 from .guards import GuardLimits, evaluate_guards
 from .llm import Reasoner
@@ -95,6 +96,12 @@ class GraphDeps:
     authorize: Authorizer | None = None
     on_event: EventSink = _noop
     clock: Callable[[], float] = time.monotonic
+    # Read-only, orchestrator-aligned prior-turn context (from redis-agent). The
+    # agent grounds its planning on it but never authorizes from it.
+    conversation_history: str = ""
+    # Native Langfuse CallbackHandler (or ``None``). Passed to the LangGraph
+    # invoke so each node + LLM generation nests under the shared run trace.
+    langfuse_callbacks: object | None = None
 
 
 def build_graph(deps: GraphDeps) -> CompiledStateGraph:
@@ -112,7 +119,8 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
         views: tuple[SchemaView, ...] = ()
         if deps.data_client is not None:
             try:
-                raw = await deps.data_client.describe_schema()
+                with lf.tool_span("mcp:describe_schema"):
+                    raw = await deps.data_client.describe_schema()
                 views = _parse_schema(raw)
             except DataClientError:
                 views = ()
@@ -133,6 +141,7 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
             goal=state["goal"],
             schema=state.get("schema", ()),
             history=tuple(state.get("attempts", [])),
+            conversation_history=deps.conversation_history,
         )
         if decision.action == "finish" or not decision.sql.strip():
             return {"route": "compose", "pending_sql": ""}
@@ -159,7 +168,8 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
         sql = state.get("pending_sql", "")
         params = list(state.get("pending_params", []))
         emit("agent.query.started", {"sqlHash": hash_sql(sql)})
-        attempt = await _execute_query(deps.data_client, sql, params)
+        with lf.tool_span("mcp:run_select_query", sqlHash=hash_sql(sql)):
+            attempt = await _execute_query(deps.data_client, sql, params)
         emit(
             "agent.query.completed",
             {
@@ -288,9 +298,12 @@ async def run_task(task: TaskInput, deps: GraphDeps) -> AgentResult:
     compiled = build_graph(deps)
     # Recursion backstop independent of the explicit iteration/time/query guards.
     recursion_limit = max(deps.limits.max_iterations, deps.limits.max_queries) * 4 + 8
+    config: dict[str, Any] = {"recursion_limit": recursion_limit}
+    if deps.langfuse_callbacks is not None:
+        config["callbacks"] = [deps.langfuse_callbacks]
     final: dict[str, Any] = await compiled.ainvoke(
         {"goal": task.goal, "intent": task.intent, "run_id": task.run_id, "attempts": []},
-        config={"recursion_limit": recursion_limit},
+        config=cast(Any, config),
     )
     raw_status = final.get("status") or ("completed" if final.get("answer") else "failed")
     status: AgentStatus = cast(AgentStatus, raw_status) if raw_status in _STATUSES else "failed"
@@ -389,20 +402,30 @@ async def _dispatch_writes(
             )
             continue
         idempotency_key = f"agent-write:{run_id}:{call.capability_id}:{index}"
-        emit("agent.write.started", {"capability": call.capability_id})
+        emit(
+            "agent.write.started",
+            {"capability": call.capability_id, "input": dict(call.tool_input)},
+        )
         try:
-            result = await capability_client.execute(
-                run_id=run_id,
-                capability_id=call.capability_id,
-                tool_input=call.tool_input,
-                idempotency_key=idempotency_key,
-            )
+            with lf.tool_span(f"capability:{call.capability_id}", capability=call.capability_id):
+                result = await capability_client.execute(
+                    run_id=run_id,
+                    capability_id=call.capability_id,
+                    tool_input=call.tool_input,
+                    idempotency_key=idempotency_key,
+                )
         except CapabilityClientError as exc:
             code = f"capability_error:{exc.status_code or 'network'}"
             emit("agent.write.failed", {"capability": call.capability_id, "reason": code})
             outcomes.append(WriteOutcome(call.capability_id, "failed", "", reason=code))
             continue
-        emit("agent.write.completed", {"capability": call.capability_id})
+        # ``input``/``output`` are nested structures: the tracer scrubs them to
+        # ``<dict>`` (no PII in logs), while the verbatim payload is returned to
+        # the orchestrator for the owner's own SSE/webhook stream.
+        emit(
+            "agent.write.completed",
+            {"capability": call.capability_id, "output": result.data},
+        )
         outcomes.append(
             WriteOutcome(call.capability_id, "completed", result.summary, links=result.links)
         )

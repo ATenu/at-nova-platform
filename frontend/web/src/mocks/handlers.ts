@@ -509,6 +509,7 @@ export const handlers = [
       conversationId: conversation.id,
       cancelRequested: false,
       finalResponse: reply.message.text,
+      responseMessageId: reply.message.id,
       eventsUrl: `${API}/agent-runs/${runId}/events`,
       createdAt: ts(),
       updatedAt: ts(),
@@ -519,11 +520,23 @@ export const handlers = [
       {
         id: nextId('evt'),
         sequence: 2,
-        type: 'tool.call.completed',
-        payload: { summary: reply.message.text },
+        type: 'tool.call.started',
+        payload: { capability: 'sales.read', input: { query: body.message } },
         createdAt: ts(),
       },
-      { id: nextId('evt'), sequence: 3, type: 'run.completed', payload: {}, createdAt: ts() },
+      {
+        id: nextId('evt'),
+        sequence: 3,
+        type: 'tool.call.completed',
+        payload: {
+          capability: 'sales.read',
+          summary: reply.message.text,
+          input: { query: body.message },
+          output: { preview: reply.message.text.slice(0, 120) },
+        },
+        createdAt: ts(),
+      },
+      { id: nextId('evt'), sequence: 4, type: 'run.completed', payload: {}, createdAt: ts() },
     ];
     agentRunsStore.set(runId, { run, events });
 
@@ -536,6 +549,35 @@ export const handlers = [
     }
     const entry = agentRunsStore.get(String(params.runId));
     return entry ? HttpResponse.json(entry.run) : notFound('Agent run not found.');
+  }),
+
+  http.get(`${API}/agent-runs`, ({ request }) => {
+    if (!emailFromRequest(request)) {
+      return unauthorized();
+    }
+    const conversationId = new URL(request.url).searchParams.get('conversationId');
+    if (!conversationId) {
+      return HttpResponse.json([]);
+    }
+    const runs = [...agentRunsStore.values()]
+      .map((entry) => entry.run)
+      .filter((run) => run.conversationId === conversationId);
+    return HttpResponse.json(runs);
+  }),
+
+  http.get(`${API}/agent-runs/:runId/trace`, ({ params, request }) => {
+    if (!emailFromRequest(request)) {
+      return unauthorized();
+    }
+    const entry = agentRunsStore.get(String(params.runId));
+    if (!entry) {
+      return notFound('Agent run not found.');
+    }
+    return HttpResponse.json({
+      runId: entry.run.runId,
+      status: entry.run.status,
+      events: entry.events,
+    });
   }),
 
   http.post(`${API}/agent-runs/:runId/cancel`, ({ params, request }) => {

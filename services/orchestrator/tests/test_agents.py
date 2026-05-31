@@ -29,11 +29,19 @@ def _config() -> OrchestratorConfig:
         max_run_steps=8,
         sql_analyst_agent_url="http://at-sql-analyser:8003",
         sql_analyst_agent_audience="nova-agent-sql-analyst",
+        agent_request_timeout_s=180.0,
         openai_api_key="",
         llm_model="gpt-4o-mini",
         llm_temperature=0.0,
         llm_timeout_s=30.0,
         openai_base_url=None,
+        redis_agent_url=None,
+        agent_state_enabled=False,
+        agent_state_key_prefix="nova:agent:",
+        agent_state_ttl_s=7200,
+        agent_history_ttl_s=2_592_000,
+        agent_history_max_entries=200,
+        agent_history_read_limit=20,
     )
 
 

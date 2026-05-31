@@ -13,6 +13,7 @@ from at_sql_analyser.harness.graph import GraphDeps, run_task
 from at_sql_analyser.harness.guards import GuardLimits
 from at_sql_analyser.harness.llm import WriteItem
 from at_sql_analyser.harness.state import TaskInput
+from at_sql_analyser.observability.tracing import scrub
 
 from .fakes import FakeCapabilityClient, FakeReasoner
 
@@ -113,10 +114,14 @@ async def test_mixed_results_complete_when_any_succeeds() -> None:
     assert result.status == "completed"
 
 
-async def test_write_events_are_pii_free() -> None:
+async def test_write_event_traces_stay_pii_free() -> None:
+    # The owner's own stream carries the full capability input/output (so every
+    # write is trackable end to end), but the SCRUBBED trace that reaches logs /
+    # Langfuse must never contain the raw values: nested I/O collapses to
+    # "<dict>" and forbidden keys are dropped.
     seen: list[tuple[str, dict[str, object]]] = []
     deps = _deps(
-        writes=[WriteItem(capability_id="issues.create", input={"title": "secret"})],
+        writes=[WriteItem(capability_id="issues.create", input={"title": "secret-pii"})],
         authorize=_allow_all,
         on_event=lambda t, p: seen.append((t, p)),
     )
@@ -124,6 +129,11 @@ async def test_write_events_are_pii_free() -> None:
     types = [t for t, _ in seen]
     assert "agent.write.started" in types
     assert "agent.write.completed" in types
+
+    # The verbatim event (returned to the orchestrator → owner stream) keeps the input.
+    started = next(payload for event_type, payload in seen if event_type == "agent.write.started")
+    assert started["input"] == {"title": "secret-pii"}
+
+    # The trace, however, is scrubbed: the raw value never appears.
     for _, payload in seen:
-        assert "title" not in payload
-        assert "input" not in payload
+        assert "secret-pii" not in str(scrub(payload))

@@ -7,6 +7,7 @@ import {
   idempotencyKeySchema,
   type CreateAgentRunBody,
   type ListEventsQuery,
+  type ListRunsQuery,
   type RunIdParams,
 } from './agent-run.schema';
 
@@ -41,6 +42,19 @@ export class AgentRunController {
   getById = async (req: Request, res: Response): Promise<void> => {
     const { runId } = req.params as unknown as RunIdParams;
     res.json(await this.service.getRun(runId, this.requireAuth(req)));
+  };
+
+  /** List the caller's runs for a conversation (maps messages to run traces). */
+  list = async (req: Request, res: Response): Promise<void> => {
+    const auth = this.requireAuth(req);
+    const { conversationId } = req.query as unknown as ListRunsQuery;
+    res.json(await this.service.listRunsForConversation(conversationId, auth));
+  };
+
+  /** Full user-visibility trace (tool/agent calls + IO) for a completed run. */
+  getTrace = async (req: Request, res: Response): Promise<void> => {
+    const { runId } = req.params as unknown as RunIdParams;
+    res.json(await this.service.getRunTrace(runId, this.requireAuth(req)));
   };
 
   cancel = async (req: Request, res: Response): Promise<void> => {

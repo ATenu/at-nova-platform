@@ -18,6 +18,9 @@ export const queryKeys = {
   sop: (id: string) => ['sops', id] as const,
   conversations: ['conversations'] as const,
   conversation: (id: string) => ['conversations', id] as const,
+  conversationRuns: (conversationId: string) =>
+    ['conversations', conversationId, 'runs'] as const,
+  runTrace: (runId: string) => ['agent-runs', runId, 'trace'] as const,
 } as const;
 
 export function createQueryClient(): QueryClient {

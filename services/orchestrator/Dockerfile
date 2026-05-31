@@ -14,7 +14,9 @@ WORKDIR /app
 # uvicorn[standard] ship wheels, so no system build toolchain is required.
 COPY pyproject.toml ./
 COPY src ./src
-RUN pip install .
+# Install with the observability extra so Langfuse (v3) tracing is available in
+# the running worker. Tracing still fails soft if Langfuse is unreachable.
+RUN pip install ".[observability]"
 
 # Drop privileges: the execution plane must never run as root.
 RUN useradd --create-home --uid 10001 nova

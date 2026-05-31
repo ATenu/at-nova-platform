@@ -39,14 +39,25 @@ Mandatory routing policy:
    trend, summary, records, customers, sales, revenue, "in my record/database")
    → call data__analyse__read when it is available. This is the DEFAULT for any
    business-data question that does not name a specific UUID.
-3. Resource-scoped tools (customerId, actionId, salesId required) → only when
-   that UUID appears explicitly in REQUEST or OBSERVATIONS. If the user asks
-   about data but gives no UUID, use data__analyse__read instead.
+3. Resource-scoped tools (need a customerId/saleId/issueId/actionId/productId)
+   → populate the id ONLY from an explicit UUID in REQUEST or OBSERVATIONS. If
+   the user names an entity (a customer name, product name, action title, etc.)
+   but no UUID is known yet, FIRST call the matching resolver tool to get it,
+   then call the scoped tool on the next turn using the id from OBSERVATIONS:
+     - customer by name/email → customers__search
+     - product by name → products__search
+     - sale (by customer/date/payment) → sales__list
+     - issue (by status/customer) → issues__list
+     - action by title/issue → actions__list
+   Never invent or guess a UUID. For broad analytics with no specific record,
+   use data__analyse__read instead.
 4. actions__next → when the user asks for their next task/action/to-do.
 5. sop__read → when the user asks about procedures/SOPs/compliance docs.
-6. Write tools (sales__create, issues__create, actions__markCompleted,
-   data__act__write) → only when the user clearly requests that mutation AND
-   required fields are present. Never for read-only questions.
+6. Write tools (sales__create, issues__create, issues__update,
+   actions__markCompleted, actions__update, actions__addComment, sop__create,
+   sop__update, sop__addVersion, data__act__write) → only when the user clearly
+   requests that mutation AND required fields are present (resolve any needed
+   record id via a resolver tool first). Never for read-only questions.
 7. data__schema__describe → only when the user explicitly asks what views/columns
    exist; not for business questions.
 8. Call finish_orchestration ONLY when OBSERVATIONS already contain grounded
@@ -102,7 +113,12 @@ def render_menu(menu: Sequence[MenuItem]) -> str:
             if item.input_fields
             else "  input: (none — pass the user goal via the request text)"
         )
-        scope = " [requires UUID in request]" if item.resource_scoped else ""
+        scope = (
+            " [needs a record id; if you don't have it, call the matching "
+            "search/list tool first and read the id from OBSERVATIONS]"
+            if item.resource_scoped
+            else ""
+        )
         lines.append(
             f"- tool `{item.tool_name}` → capability {item.capability_id} "
             f"[{item.mode}/{item.kind}]{scope}\n"
@@ -124,7 +140,11 @@ def render_observations(observations: Sequence[Observation]) -> str:
 
 
 def reason_user(
-    *, prompt: str, menu: Sequence[MenuItem], observations: Sequence[Observation]
+    *,
+    prompt: str,
+    menu: Sequence[MenuItem],
+    observations: Sequence[Observation],
+    history: str = "",
 ) -> str:
     obs_text = render_observations(observations)
     first_turn = obs_text == "(no steps have run yet)"
@@ -138,32 +158,46 @@ def reason_user(
         else "Call the next capability tool, or finish_orchestration if the "
         "request is now fully answered."
     )
-    return "\n\n".join(
+    sections = [_data_block("REQUEST", prompt or "(no request text was provided)")]
+    if history:
+        sections.append(_data_block("CONVERSATION HISTORY (prior turns, context only)", history))
+    sections.extend(
         [
-            _data_block("REQUEST", prompt or "(no request text was provided)"),
             f"AUTHORIZED TOOLS (invoke via tool calling; names use __ for dots):\n"
             f"{render_menu(menu)}",
             _data_block("OBSERVATIONS", obs_text),
             mandate,
         ]
     )
+    return "\n\n".join(sections)
 
 
-def critique_user(*, prompt: str, observations: Sequence[Observation]) -> str:
-    return "\n\n".join(
+def critique_user(
+    *, prompt: str, observations: Sequence[Observation], history: str = ""
+) -> str:
+    sections = [_data_block("REQUEST", prompt or "(no request text was provided)")]
+    if history:
+        sections.append(_data_block("CONVERSATION HISTORY (prior turns, context only)", history))
+    sections.extend(
         [
-            _data_block("REQUEST", prompt or "(no request text was provided)"),
             _data_block("OBSERVATIONS", render_observations(observations)),
             "Decide whether the request is fully answered by OBSERVATIONS.",
         ]
     )
+    return "\n\n".join(sections)
 
 
-def compose_user(*, prompt: str, observations: Sequence[Observation]) -> str:
-    return "\n\n".join(
+def compose_user(
+    *, prompt: str, observations: Sequence[Observation], history: str = ""
+) -> str:
+    sections = [_data_block("REQUEST", prompt or "(no request text was provided)")]
+    if history:
+        sections.append(_data_block("CONVERSATION HISTORY (prior turns, context only)", history))
+    sections.extend(
         [
-            _data_block("REQUEST", prompt or "(no request text was provided)"),
             _data_block("OBSERVATIONS", render_observations(observations)),
-            "Write the final answer grounded only in OBSERVATIONS.",
+            "Write the final answer grounded only in OBSERVATIONS. You may use "
+            "CONVERSATION HISTORY to resolve references to earlier turns.",
         ]
     )
+    return "\n\n".join(sections)

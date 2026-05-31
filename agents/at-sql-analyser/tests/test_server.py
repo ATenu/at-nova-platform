@@ -57,6 +57,11 @@ def make_config() -> AgentConfig:
         llm_temperature=0.0,
         llm_timeout_s=30.0,
         openai_base_url=None,
+        redis_agent_url=None,
+        agent_state_enabled=False,
+        agent_state_key_prefix="nova:agent:",
+        agent_state_ttl_s=7200,
+        agent_history_read_limit=20,
     )
 
 
@@ -149,6 +154,29 @@ def test_read_task_completes() -> None:
     assert body["status"] == "completed"
     assert body["answer"] == "ok"
     assert data.closed is True  # read path closes its MCP client
+
+
+def test_read_task_returns_progress_events() -> None:
+    # Every sub-step the agent runs is returned to the orchestrator so the worker
+    # can stream it to the user (SSE) and deliver it to the webhook.
+    client, _, _ = build_client()
+    body = result_data(send_task(client))
+    events = body["events"]
+    assert isinstance(events, list)
+    types = {event["type"] for event in events}
+    assert "agent.task.received" in types
+    assert "agent.query.completed" in types
+
+
+def test_approved_write_returns_io_events() -> None:
+    snap = make_snapshot(roles=("admin",), allowlist=("data.act.write", "issues.create"))
+    reasoner = FakeReasoner(writes=[WriteItem(capability_id="issues.create", input={"title": "x"})])
+    client, _, _ = build_client(snapshot=snap, reasoner=reasoner)
+    body = result_data(send_task(client, skill_id="data.act.write", approval_granted=True))
+    events = body["events"]
+    started = next(event for event in events if event["type"] == "agent.write.started")
+    assert started["payload"]["input"] == {"title": "x"}
+    assert any(event["type"] == "agent.write.completed" for event in events)
 
 
 def test_missing_auth_is_rejected() -> None:

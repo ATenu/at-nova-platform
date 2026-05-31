@@ -25,6 +25,71 @@ from .models import (
 
 Visibility = str  # "user" | "internal" | "security"
 
+# Substrings that mark a key as carrying a credential/secret. Their VALUE is
+# always replaced before an I/O payload is persisted to an event (and thus
+# streamed over SSE and delivered to webhooks). Business data is preserved; only
+# secrets/tokens are redacted, never logged or forwarded.
+_SECRET_KEY_TOKENS: tuple[str, ...] = (
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "authorization",
+    "apikey",
+    "api_key",
+    "bearer",
+    "credential",
+    "cookie",
+    "private_key",
+    "privatekey",
+    "session_id",
+)
+_REDACTED = "[redacted]"
+# Bounds so a single tool result cannot bloat the event row / webhook body.
+_MAX_STRING = 8192
+_MAX_DEPTH = 8
+_MAX_ITEMS = 500
+
+
+def _is_secret_key(key: str) -> bool:
+    lowered = key.lower()
+    return any(token in lowered for token in _SECRET_KEY_TOKENS)
+
+
+def safe_io(value: object, *, _depth: int = 0) -> object:
+    """Return a JSON-safe, bounded, secret-redacted copy of ``value``.
+
+    Used to attach full tool/agent call inputs and outputs to ``user`` events so
+    every update is trackable end to end (SSE + webhook). Business data is kept
+    verbatim; only keys that look like credentials are redacted, and strings,
+    depth, and collection sizes are bounded so a payload cannot grow unbounded.
+    """
+    if _depth >= _MAX_DEPTH:
+        return "[truncated]"
+    if isinstance(value, bool) or value is None or isinstance(value, int | float):
+        return value
+    if isinstance(value, str):
+        return value if len(value) <= _MAX_STRING else value[:_MAX_STRING] + "…"
+    if isinstance(value, dict):
+        safe: dict[str, Any] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= _MAX_ITEMS:
+                safe["…"] = "[truncated]"
+                break
+            key_str = str(key)
+            safe[key_str] = (
+                _REDACTED if _is_secret_key(key_str) else safe_io(item, _depth=_depth + 1)
+            )
+        return safe
+    if isinstance(value, (list, tuple)):
+        items = [safe_io(item, _depth=_depth + 1) for item in list(value)[:_MAX_ITEMS]]
+        if len(value) > _MAX_ITEMS:
+            items.append("[truncated]")
+        return items
+    # Unknown / non-JSON types: surface a bounded string representation.
+    text = str(value)
+    return text if len(text) <= _MAX_STRING else text[:_MAX_STRING] + "…"
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -58,6 +123,13 @@ def emit_event(
         created_at=_now(),
     )
     session.add(event)
+    # Every user-visibility update (not just run.completed) is mirrored to the
+    # owner's webhook via the transactional outbox, so the same stream the
+    # frontend sees over SSE is delivered to the configured destination. The
+    # event is flushed first so the outbox row's FK references a persisted id.
+    if visibility == "user":
+        session.flush()
+        enqueue_webhook_if_configured(session, run, event)
     return event
 
 

@@ -79,12 +79,27 @@ class OrchestratorConfig:
     # A2A SQL analyst agent: endpoint + the audience the worker mints tokens for.
     sql_analyst_agent_url: str
     sql_analyst_agent_audience: str
+    # Wall-clock budget for one outbound A2A task (token mint + card resolution +
+    # the agent's full bounded loop). MUST exceed the agent's own
+    # AGENT_TOTAL_TIMEOUT_S plus one in-flight LLM call, otherwise the worker
+    # aborts a still-working agent mid-run and records a false failure.
+    agent_request_timeout_s: float
     # LLM (OpenAI) powering the autonomous reasoning/critique/compose nodes.
     openai_api_key: str
     llm_model: str
     llm_temperature: float
     llm_timeout_s: float
     openai_base_url: str | None
+    # Shared agent working-state + aligned conversation history (redis-agent).
+    # Optional: when unset the orchestrator runs exactly as before (stateless,
+    # single-turn) — the store is fail-soft, never a hard dependency.
+    redis_agent_url: str | None
+    agent_state_enabled: bool
+    agent_state_key_prefix: str
+    agent_state_ttl_s: int
+    agent_history_ttl_s: int
+    agent_history_max_entries: int
+    agent_history_read_limit: int
 
     @property
     def is_worker(self) -> bool:
@@ -124,6 +139,10 @@ def load_config() -> OrchestratorConfig:
         sql_analyst_agent_audience=_optional(
             "SQL_ANALYST_AGENT_AUDIENCE", "nova-agent-sql-analyst"
         ),
+        # Default 180s = agent total budget (120s) + one in-flight LLM call (30s)
+        # + headroom for token/card/network. Stays well under the Celery soft
+        # time limit so the worker, not httpx, owns the ultimate ceiling.
+        agent_request_timeout_s=_float("AGENT_REQUEST_TIMEOUT_S", 180.0),
         # Optional at boot (the gateway role does not reason); the worker's LLM
         # client fails fast if it is missing when reasoning is actually needed.
         openai_api_key=_optional("OPENAI_API_KEY", ""),
@@ -131,4 +150,11 @@ def load_config() -> OrchestratorConfig:
         llm_temperature=_float("LLM_TEMPERATURE", 0.0),
         llm_timeout_s=_float("LLM_TIMEOUT_S", 30.0),
         openai_base_url=os.environ.get("OPENAI_BASE_URL") or None,
+        redis_agent_url=os.environ.get("REDIS_AGENT_URL") or None,
+        agent_state_enabled=_bool("AGENT_STATE_ENABLED", True),
+        agent_state_key_prefix=_optional("AGENT_STATE_KEY_PREFIX", "nova:agent:"),
+        agent_state_ttl_s=_int("AGENT_STATE_TTL_SECONDS", 7200),
+        agent_history_ttl_s=_int("AGENT_HISTORY_TTL_SECONDS", 2_592_000),
+        agent_history_max_entries=_int("AGENT_HISTORY_MAX_ENTRIES", 200),
+        agent_history_read_limit=_int("AGENT_HISTORY_READ_LIMIT", 20),
     )

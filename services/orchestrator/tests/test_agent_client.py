@@ -15,6 +15,7 @@ from nova_orchestrator.agent_client import (
     AgentClient,
     AgentClientError,
     _BearerInterceptor,
+    _coerce_events,
     _coerce_links,
     _parse_result,
 )
@@ -83,6 +84,54 @@ def test_parse_message_only_response() -> None:
 def test_parse_raises_when_no_task_or_message() -> None:
     with pytest.raises(AgentClientError):
         _parse_result(None, None)
+
+
+def test_parse_reads_agent_progress_events() -> None:
+    # The agent returns its ordered sub-steps (with cataloged capability I/O) so
+    # the worker can stream them to the user and the webhook.
+    task = _task(
+        TaskState.completed,
+        data={
+            "status": "completed",
+            "answer": "done",
+            "events": [
+                {
+                    "type": "agent.write.started",
+                    "payload": {"capability": "issues.create", "input": {"title": "x"}},
+                },
+                {
+                    "type": "agent.write.completed",
+                    "payload": {"capability": "issues.create", "output": {"id": "i-1"}},
+                },
+            ],
+        },
+    )
+    result = _parse_result(task, None)
+    assert [event.type for event in result.events] == [
+        "agent.write.started",
+        "agent.write.completed",
+    ]
+    assert result.events[0].payload["input"] == {"title": "x"}
+    assert result.events[1].payload["output"] == {"id": "i-1"}
+
+
+def test_coerce_events_drops_malformed_entries() -> None:
+    events = _coerce_events(
+        [
+            {"type": "agent.query.started", "payload": {"sqlHash": "sha256:x"}},
+            {"type": "", "payload": {}},  # empty type dropped
+            {"payload": {"x": 1}},  # missing type dropped
+            {"type": "agent.query.completed"},  # missing payload -> {}
+            "not-a-dict",
+        ]
+    )
+    assert [event.type for event in events] == ["agent.query.started", "agent.query.completed"]
+    assert events[1].payload == {}
+
+
+def test_coerce_events_handles_non_list() -> None:
+    assert _coerce_events(None) == ()
+    assert _coerce_events("nope") == ()
 
 
 def test_coerce_links_filters_malformed_entries() -> None:

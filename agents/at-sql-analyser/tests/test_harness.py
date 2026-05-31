@@ -76,6 +76,7 @@ async def test_timeout_guard_terminates_loop() -> None:
             goal: str,
             schema: Sequence[SchemaView],
             history: Sequence[QueryAttempt],
+            conversation_history: str = "",
         ) -> QueryDecision:
             clock.advance(20.0)
             return read_query(f"SELECT {len(history)} FROM mcp_read.sales")

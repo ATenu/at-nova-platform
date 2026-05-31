@@ -29,7 +29,12 @@ from a2a.utils import get_data_parts, get_text_parts
 
 from .tokens import ServiceTokenClient
 
-_TIMEOUT_S = 60.0
+# Fail fast on an unreachable agent, but give a reachable-but-working agent its
+# full read budget. The read/write/pool span must cover the agent's entire
+# bounded loop (see OrchestratorConfig.agent_request_timeout_s); only the TCP
+# connect phase is held to a short ceiling.
+_CONNECT_TIMEOUT_S = 10.0
+_DEFAULT_TIMEOUT_S = 180.0
 _WORKER_SENDER = "nova-celery-worker"
 
 # Map the A2A task state to Nova's internal step status vocabulary.
@@ -86,8 +91,15 @@ class _BearerInterceptor(ClientCallInterceptor):
 
 
 class AgentClient:
-    def __init__(self, *, tokens: ServiceTokenClient) -> None:
+    def __init__(
+        self, *, tokens: ServiceTokenClient, timeout_s: float = _DEFAULT_TIMEOUT_S
+    ) -> None:
         self._tokens = tokens
+        # Short connect ceiling (unreachable agent fails fast); the agent's full
+        # bounded loop is bounded by the read/write/pool span, never cut short.
+        self._timeout = httpx.Timeout(
+            timeout_s, connect=min(_CONNECT_TIMEOUT_S, timeout_s)
+        )
 
     def send_task(
         self,
@@ -101,6 +113,9 @@ class AgentClient:
         correlation_id: str,
         intent: str = "read",
         approval_granted: bool = False,
+        conversation_id: str = "",
+        langfuse_trace_id: str | None = None,
+        langfuse_parent_observation_id: str | None = None,
     ) -> AgentTaskResult:
         token = self._tokens.get_token(audience_scope)
         payload = {
@@ -112,7 +127,17 @@ class AgentClient:
             "goal": goal,
             "intent": intent,
             "approvalGranted": approval_granted,
+            # Conversation id lets the agent read the orchestrator-aligned, shared
+            # history for multi-turn context. Never carries tokens/PII itself.
+            "conversationId": conversation_id,
         }
+        # Non-sensitive W3C trace identifiers so the agent joins the SAME Langfuse
+        # trace and nests under this run's dispatch span. Omitted when tracing is
+        # disabled. These are ids only — never tokens/PII.
+        if langfuse_trace_id:
+            payload["langfuseTraceId"] = langfuse_trace_id
+        if langfuse_parent_observation_id:
+            payload["langfuseParentObservationId"] = langfuse_parent_observation_id
         try:
             return asyncio.run(self._send(base_url, token, goal, payload))
         except AgentClientError as exc:
@@ -131,7 +156,7 @@ class AgentClient:
     async def _send(
         self, base_url: str, token: str, goal: str, payload: dict[str, Any]
     ) -> AgentTaskResult:
-        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as http:
+        async with httpx.AsyncClient(timeout=self._timeout) as http:
             resolver = A2ACardResolver(httpx_client=http, base_url=base_url.rstrip("/"))
             card = await resolver.get_agent_card()
             config = ClientConfig(
@@ -179,6 +204,7 @@ def _parse_result(task: Task | None, message: Message | None) -> AgentTaskResult
             status=status,
             answer=answer if isinstance(answer, str) else None,
             reason=reason if isinstance(reason, str) else None,
+            events=_coerce_events(data.get("events")),
             links=_coerce_links(data.get("links")),
         )
     if message is not None:
@@ -189,6 +215,28 @@ def _parse_result(task: Task | None, message: Message | None) -> AgentTaskResult
             reason=None,
         )
     raise AgentClientError("agent returned no task or message")
+
+
+def _coerce_events(value: object) -> tuple[AgentEvent, ...]:
+    """Read the agent's typed progress events from its result DataPart.
+
+    Untrusted input: only ``{type: str, payload: dict}`` entries are kept; the
+    payload is preserved (the orchestrator redacts + bounds it before it becomes
+    a user event). Anything malformed is dropped, never trusted verbatim.
+    """
+    events: list[AgentEvent] = []
+    if isinstance(value, list):
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            event_type = item.get("type")
+            if not isinstance(event_type, str) or not event_type:
+                continue
+            payload = item.get("payload")
+            events.append(
+                AgentEvent(type=event_type, payload=payload if isinstance(payload, dict) else {})
+            )
+    return tuple(events)
 
 
 def _merge_data(parts: list[dict[str, Any]]) -> dict[str, Any]:

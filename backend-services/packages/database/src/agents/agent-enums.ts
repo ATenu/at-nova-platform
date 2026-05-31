@@ -46,6 +46,21 @@ export const AGENT_EVENT_TYPES = [
   'agent.call.progress',
   'agent.call.completed',
   'agent.call.failed',
+  // Sub-events forwarded from an A2A agent's own run loop. Carry cataloged
+  // capability inputs/outputs (never raw SQL or rows) so every step is trackable
+  // over SSE and the webhook.
+  'agent.task.received',
+  'agent.task.denied',
+  'agent.schema.loaded',
+  'agent.query.started',
+  'agent.query.completed',
+  'agent.query.rejected',
+  'agent.write.started',
+  'agent.write.completed',
+  'agent.write.failed',
+  'agent.write.denied',
+  'agent.completed',
+  'approval.required',
   'tool.call.started',
   'tool.call.completed',
   'tool.call.failed',

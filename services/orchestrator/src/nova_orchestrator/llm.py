@@ -46,13 +46,16 @@ class Reasoner(Protocol):
         prompt: str,
         menu: Sequence[MenuItem],
         observations: Sequence[Observation],
+        history: str = "",
     ) -> ReasonDecision: ...
 
     def critique(
-        self, *, prompt: str, observations: Sequence[Observation]
+        self, *, prompt: str, observations: Sequence[Observation], history: str = ""
     ) -> OrchestratorCritique: ...
 
-    def compose(self, *, prompt: str, observations: Sequence[Observation]) -> str: ...
+    def compose(
+        self, *, prompt: str, observations: Sequence[Observation], history: str = ""
+    ) -> str: ...
 
 
 class ReasonerError(RuntimeError):
@@ -161,6 +164,7 @@ class OpenAIReasoner:
         prompt: str,
         menu: Sequence[MenuItem],
         observations: Sequence[Observation],
+        history: str = "",
     ) -> ReasonDecision:
         from langchain_core.messages import AIMessage
 
@@ -178,7 +182,9 @@ class OpenAIReasoner:
         # any data/action request the prompt steers it to the matching capability.
         obs_empty = len(observations) == 0
         tools = tools_for_menu(menu, include_finish=True)
-        user = prompts.reason_user(prompt=prompt, menu=menu, observations=observations)
+        user = prompts.reason_user(
+            prompt=prompt, menu=menu, observations=observations, history=history
+        )
         tool_choice = "required" if obs_empty else "auto"
         message = self._invoke_reason(tools, tool_choice, user)
         if not isinstance(message, AIMessage):
@@ -206,18 +212,20 @@ class OpenAIReasoner:
             raise ReasonerError("reasoner tool-calling request failed") from exc
 
     def critique(
-        self, *, prompt: str, observations: Sequence[Observation]
+        self, *, prompt: str, observations: Sequence[Observation], history: str = ""
     ) -> OrchestratorCritique:
         return self._structured(
             OrchestratorCritique,
             prompts.CRITIQUE_SYSTEM,
-            prompts.critique_user(prompt=prompt, observations=observations),
+            prompts.critique_user(prompt=prompt, observations=observations, history=history),
         )
 
-    def compose(self, *, prompt: str, observations: Sequence[Observation]) -> str:
+    def compose(
+        self, *, prompt: str, observations: Sequence[Observation], history: str = ""
+    ) -> str:
         from langchain_core.messages import HumanMessage, SystemMessage
 
-        user = prompts.compose_user(prompt=prompt, observations=observations)
+        user = prompts.compose_user(prompt=prompt, observations=observations, history=history)
         message = self._llm.invoke(
             [
                 SystemMessage(content=prompts.COMPOSE_SYSTEM),

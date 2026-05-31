@@ -170,3 +170,186 @@
     opacity: 1;
   }
 }
+
+/* Tool / agent activity trace (live SSE stream + persisted per-turn review). */
+.run-trace {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-1, var(--surface-2));
+  overflow: hidden;
+}
+.run-trace-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+.run-trace-toggle:hover {
+  background: var(--surface-2);
+}
+.run-trace-toggle:focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: -2px;
+}
+.run-trace-body {
+  padding: 4px 12px 10px;
+  border-top: 1px solid var(--border);
+}
+.run-trace-steps {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.run-trace-step {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.run-trace-dot {
+  margin-top: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--text-subtle);
+  flex: 0 0 auto;
+}
+.run-trace-dot-tool {
+  background: var(--brand-500);
+}
+.run-trace-dot-agent {
+  background: var(--accent-500, #8b5cf6);
+}
+.run-trace-summary-badge {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.run-trace-invocations {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.run-trace-invocation {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-elev, var(--surface-2));
+}
+.run-trace-invocation-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+.run-trace-invocation-toggle:hover {
+  background: var(--surface-2);
+}
+.run-trace-invocation-toggle:focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: -2px;
+}
+.run-trace-invocation-label {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-trace-status {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex: none;
+}
+.run-trace-status-running {
+  background: rgba(99, 102, 241, 0.18);
+  color: var(--brand-400);
+}
+.run-trace-status-completed {
+  background: rgba(34, 197, 94, 0.14);
+  color: var(--success, #22c55e);
+}
+.run-trace-status-failed {
+  background: rgba(239, 68, 68, 0.14);
+  color: var(--danger);
+}
+.run-trace-substep-count {
+  margin-left: auto;
+  flex: none;
+}
+.run-trace-invocation-body {
+  padding: 0 10px 10px 32px;
+  border-top: 1px solid var(--border);
+}
+.run-trace-substeps {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.run-trace-substep-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.run-trace-substep-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 0;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+.run-trace-substep-toggle:disabled {
+  cursor: default;
+}
+.run-trace-substep-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--text-subtle);
+  flex: none;
+}
+.run-trace-substep-body {
+  padding-left: 18px;
+  padding-bottom: 4px;
+}
+.run-trace-lifecycle {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}

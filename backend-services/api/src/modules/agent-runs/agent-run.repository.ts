@@ -8,6 +8,9 @@ import {
 import type { DataSource, Repository } from 'typeorm';
 import type { EntitlementSnapshot } from './entitlement-snapshot';
 
+/** Page size used when collecting a run's full user-visibility event trace. */
+const USER_EVENT_PAGE_SIZE = 200;
+
 export interface CreateAgentRunData {
   readonly ownerSubject: string;
   readonly ownerUserId: string;
@@ -146,6 +149,42 @@ export class AgentRunRepository {
     idempotencyKey: string,
   ): Promise<AgentRun | null> {
     return this.runs.findOne({ where: { ownerSubject, idempotencyKey } });
+  }
+
+  /**
+   * Owner-scoped list of a conversation's runs (default deny: only the caller's
+   * own runs are ever returned). Used to map each persisted assistant message
+   * back to the run whose trace produced it.
+   */
+  async listForOwnerAndConversation(
+    ownerSubject: string,
+    conversationId: string,
+  ): Promise<AgentRun[]> {
+    return this.runs.find({
+      where: { ownerSubject, conversationId },
+      order: { createdAt: 'ASC' },
+    });
+  }
+
+  /**
+   * All `user`-visibility events for a run, in order. Paginates internally so a
+   * long trace is fully returned. `internal`/`security` events never leave here.
+   */
+  async listAllUserEvents(runId: string): Promise<AgentRunEvent[]> {
+    const all: AgentRunEvent[] = [];
+    let afterSequence = 0;
+    for (;;) {
+      const batch = await this.listUserEventsAfter(runId, afterSequence, USER_EVENT_PAGE_SIZE);
+      if (batch.length === 0) {
+        break;
+      }
+      all.push(...batch);
+      afterSequence = Number(batch[batch.length - 1]!.sequence);
+      if (batch.length < USER_EVENT_PAGE_SIZE) {
+        break;
+      }
+    }
+    return all;
   }
 
   /**

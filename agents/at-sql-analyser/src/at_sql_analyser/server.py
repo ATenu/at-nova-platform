@@ -42,20 +42,25 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from .agent_state import AgentStateStore
 from .auth.policy import authorize
 from .auth.resource_server import AuthError, ResourceServer, VerifiedCaller
 from .auth.snapshot import SnapshotClient, SnapshotError, VerifiedSnapshot
 from .auth.tokens import ServiceTokenClient
 from .authz.policy_gate import REASON_APPROVAL_REQUIRED
 from .config import AgentConfig, load_config
+from .content_policy import resolve_text
 from .harness.graph import GraphDeps, run_task
 from .harness.guards import GuardLimits
 from .harness.llm import OpenAIReasoner, Reasoner
 from .harness.state import AgentResult, TaskInput
 from .mcp.data_client import DataClient, McpDataClient
+from .observability import langfuse_tracing as lf
 from .observability.tracing import build_tracer
 from .skills import AGENT_NAME, SKILL_ACT_WRITE, SKILL_ANALYSE_READ, advertised_skills
 from .tools.capability_client import CapabilityClient, HttpCapabilityClient
+
+StateStoreFactory = Callable[[str], AgentStateStore | None]
 
 
 class ResourceServerPort(Protocol):
@@ -78,6 +83,12 @@ _KEY_RUN_ID = "runId"
 _KEY_SKILL = "skillId"
 _KEY_GOAL = "goal"
 _KEY_APPROVAL = "approvalGranted"
+_KEY_CONVERSATION = "conversationId"
+_KEY_LANGFUSE_TRACE = "langfuseTraceId"
+_KEY_LANGFUSE_PARENT = "langfuseParentObservationId"
+
+# This agent's own section name in the shared per-run state document.
+_STATE_ACTOR = f"agent:{AGENT_NAME}"
 
 
 def build_agent_card(cfg: AgentConfig) -> AgentCard:
@@ -135,6 +146,42 @@ def _make_updater(context: RequestContext, event_queue: EventQueue) -> TaskUpdat
     return TaskUpdater(event_queue, context.task_id or "", context.context_id or "")
 
 
+def _history_text(store: AgentStateStore | None, conversation_id: str) -> str:
+    """Read the orchestrator-aligned shared history (fail-soft, empty on miss)."""
+    if store is None or not conversation_id:
+        return ""
+    return store.read_history_text(conversation_id)
+
+
+def _persist_section(
+    store: AgentStateStore | None,
+    task: TaskInput,
+    snapshot: VerifiedSnapshot,
+    skill_id: str,
+    result: AgentResult,
+) -> None:
+    """Write this agent's OWN section of the shared per-run state document.
+
+    Entitlement-gated: the composed answer is stored in full (no PII redaction)
+    only when the owner is entitled to the skill that produced it; secrets are
+    always stripped. Raw SQL/rows never leave the agent, so only metadata + the
+    answer are persisted for cross-turn context.
+    """
+    if store is None:
+        return
+    answer = result.answer or ""
+    store.write_section(
+        task.run_id,
+        _STATE_ACTOR,
+        {
+            "skill": skill_id,
+            "status": result.status,
+            "queryCount": result.query_count,
+            "answer": resolve_text(answer, snapshot=snapshot, capability_id=skill_id),
+        },
+    )
+
+
 def _header(scope: Scope, name: bytes) -> str:
     for key, value in scope.get("headers", []):
         if key == name:
@@ -165,12 +212,14 @@ class SqlAnalystExecutor(AgentExecutor):
         data_client_factory: DataClientFactory,
         capability_client: CapabilityClient,
         limits: GuardLimits,
+        state_store_factory: StateStoreFactory | None = None,
     ) -> None:
         self._reasoner = reasoner
         self._snapshot = snapshot_client
         self._make_data_client = data_client_factory
         self._capabilities = capability_client
         self._limits = limits
+        self._make_state_store = state_store_factory
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         updater = _make_updater(context, event_queue)
@@ -183,30 +232,69 @@ class SqlAnalystExecutor(AgentExecutor):
             return
 
         tracer = build_tracer(task.run_id)
-        tracer.event("agent.task.received", {"skillId": task.skill_id, "intent": task.intent})
+
+        # Every sub-step is recorded twice: scrubbed to the tracer (no PII/SQL in
+        # logs) and verbatim into ``collected``, which is returned to the
+        # orchestrator so the full progress — incl. write inputs/outputs — can be
+        # streamed to the user (SSE) and delivered to the webhook.
+        collected: list[dict[str, Any]] = []
 
         def on_event(event_type: str, payload: dict[str, Any]) -> None:
             tracer.event(event_type, payload)
+            collected.append({"type": event_type, "payload": dict(payload)})
 
+        on_event("agent.task.received", {"skillId": task.skill_id, "intent": task.intent})
+
+        # Open the agent's root span JOINED to the orchestrator's per-run trace,
+        # then build the CallbackHandler inside it so every node + LLM generation
+        # nests under the shared context. Tracing is fail-soft (no-op if disabled).
         try:
-            snapshot = await asyncio.to_thread(self._snapshot.fetch_verified, task.run_id)
-        except SnapshotError:
-            await self._terminal(updater, "denied", None, "entitlement_unavailable")
-            return
+            with lf.agent_trace(
+                run_id=task.run_id,
+                name="sql-analyst.execute",
+                parent_trace_id=task.langfuse_trace_id,
+                parent_observation_id=task.langfuse_parent_observation_id,
+            ):
+                callbacks = lf.make_callback_handler()
+                try:
+                    snapshot = await asyncio.to_thread(
+                        self._snapshot.fetch_verified, task.run_id
+                    )
+                except SnapshotError:
+                    await self._terminal(
+                        updater, "denied", None, "entitlement_unavailable", collected
+                    )
+                    return
 
-        if task.skill_id == SKILL_ACT_WRITE:
-            result = await self._run_write(task, snapshot, on_event, tracer.event)
-        elif task.skill_id == SKILL_ANALYSE_READ:
-            result = await self._run_read(task, snapshot, on_event, tracer.event)
-        else:
-            tracer.event(
-                "agent.task.denied",
-                {"skillId": task.skill_id, "reason": "unsupported_skill"},
-            )
-            await self._terminal(updater, "denied", None, "unsupported_skill")
-            return
+                store = (
+                    self._make_state_store(snapshot.owner_subject)
+                    if self._make_state_store is not None
+                    else None
+                )
 
-        await self._terminal(updater, result.status, result.answer, result.reason)
+                if task.skill_id == SKILL_ACT_WRITE:
+                    result = await self._run_write(
+                        task, snapshot, on_event, tracer.event, store, callbacks
+                    )
+                elif task.skill_id == SKILL_ANALYSE_READ:
+                    result = await self._run_read(
+                        task, snapshot, on_event, tracer.event, store, callbacks
+                    )
+                else:
+                    on_event(
+                        "agent.task.denied",
+                        {"skillId": task.skill_id, "reason": "unsupported_skill"},
+                    )
+                    await self._terminal(
+                        updater, "denied", None, "unsupported_skill", collected
+                    )
+                    return
+
+                await self._terminal(
+                    updater, result.status, result.answer, result.reason, collected
+                )
+        finally:
+            lf.flush()
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         updater = _make_updater(context, event_queue)
@@ -219,6 +307,8 @@ class SqlAnalystExecutor(AgentExecutor):
         snapshot: VerifiedSnapshot,
         on_event: Callable[[str, dict[str, Any]], None],
         tracer_event: Callable[[str, dict[str, Any]], None],
+        store: AgentStateStore | None = None,
+        callbacks: object | None = None,
     ) -> AgentResult:
         decision = authorize(snapshot, SKILL_ANALYSE_READ)
         if not decision.allowed:
@@ -234,11 +324,15 @@ class SqlAnalystExecutor(AgentExecutor):
             limits=self._limits,
             data_client=data_client,
             on_event=on_event,
+            conversation_history=_history_text(store, task.conversation_id),
+            langfuse_callbacks=callbacks,
         )
         try:
-            return await run_task(task, deps)
+            result = await run_task(task, deps)
         finally:
             await data_client.aclose()
+        _persist_section(store, task, snapshot, SKILL_ANALYSE_READ, result)
+        return result
 
     async def _run_write(
         self,
@@ -246,6 +340,8 @@ class SqlAnalystExecutor(AgentExecutor):
         snapshot: VerifiedSnapshot,
         on_event: Callable[[str, dict[str, Any]], None],
         tracer_event: Callable[[str, dict[str, Any]], None],
+        store: AgentStateStore | None = None,
+        callbacks: object | None = None,
     ) -> AgentResult:
         decision = authorize(snapshot, SKILL_ACT_WRITE, has_approval=task.approval_granted)
         if not decision.allowed:
@@ -268,8 +364,12 @@ class SqlAnalystExecutor(AgentExecutor):
             capability_client=self._capabilities,
             authorize=authorizer,
             on_event=on_event,
+            conversation_history=_history_text(store, task.conversation_id),
+            langfuse_callbacks=callbacks,
         )
-        return await run_task(task, deps)
+        result = await run_task(task, deps)
+        _persist_section(store, task, snapshot, SKILL_ACT_WRITE, result)
+        return result
 
     # -- A2A payload mapping ------------------------------------------------
     def _parse_task(self, context: RequestContext) -> TaskInput | None:
@@ -292,6 +392,9 @@ class SqlAnalystExecutor(AgentExecutor):
         intent: Literal["read", "write"] = (
             "write" if skill_id == SKILL_ACT_WRITE else "read"
         )
+        conversation_id = data.get(_KEY_CONVERSATION)
+        trace_id = data.get(_KEY_LANGFUSE_TRACE)
+        parent_obs = data.get(_KEY_LANGFUSE_PARENT)
         return TaskInput(
             run_id=run_id,
             correlation_id=str(data.get("correlationId", context.context_id or run_id)),
@@ -299,15 +402,34 @@ class SqlAnalystExecutor(AgentExecutor):
             goal=goal,
             intent=intent,
             approval_granted=bool(data.get(_KEY_APPROVAL, False)),
+            conversation_id=conversation_id if isinstance(conversation_id, str) else "",
+            langfuse_trace_id=trace_id if isinstance(trace_id, str) else "",
+            langfuse_parent_observation_id=parent_obs if isinstance(parent_obs, str) else "",
         )
 
     async def _terminal(
-        self, updater: TaskUpdater, status: str, answer: str | None, reason: str | None
+        self,
+        updater: TaskUpdater,
+        status: str,
+        answer: str | None,
+        reason: str | None,
+        events: list[dict[str, Any]] | None = None,
     ) -> None:
-        # A status DataPart lets the orchestrator read the typed outcome; a text
-        # part carries the human-readable answer. Neither contains SQL/rows/PII.
+        # A status DataPart lets the orchestrator read the typed outcome plus the
+        # ordered progress events (so the worker can stream them to the user and
+        # the webhook); a text part carries the human-readable answer. The events
+        # carry cataloged capability inputs/outputs but never raw SQL or rows.
         parts: list[Part] = [
-            Part(root=DataPart(data={"status": status, "reason": reason, "answer": answer}))
+            Part(
+                root=DataPart(
+                    data={
+                        "status": status,
+                        "reason": reason,
+                        "answer": answer,
+                        "events": events or [],
+                    }
+                )
+            )
         ]
         if answer:
             parts.append(Part(root=TextPart(text=answer)))
@@ -377,12 +499,26 @@ def create_app(
         total_timeout_s=float(cfg.total_timeout_s),
     )
 
+    def make_state_store(owner_subject: str) -> AgentStateStore | None:
+        # Owner-scoped shared state + read-only access to the aligned history.
+        # Disabled or unconfigured ⇒ the agent stays stateless/single-turn.
+        if not cfg.agent_state_enabled or not cfg.redis_agent_url:
+            return None
+        return AgentStateStore(
+            owner_subject=owner_subject,
+            url=cfg.redis_agent_url,
+            key_prefix=cfg.agent_state_key_prefix,
+            state_ttl_s=cfg.agent_state_ttl_s,
+            history_read_limit=cfg.agent_history_read_limit,
+        )
+
     executor = SqlAnalystExecutor(
         reasoner=the_reasoner,
         snapshot_client=sc,
         data_client_factory=make_data_client,
         capability_client=cap_client,
         limits=limits,
+        state_store_factory=make_state_store,
     )
     handler = DefaultRequestHandler(agent_executor=executor, task_store=InMemoryTaskStore())
     a2a_app = A2AStarletteApplication(agent_card=build_agent_card(cfg), http_handler=handler)

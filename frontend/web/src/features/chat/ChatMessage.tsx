@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import type { AgentToolLink, MessageDto } from '@/api/types';
 import { Icon, type IconName } from '@/components/ui/Icon';
@@ -29,9 +30,12 @@ function ToolLink({ link }: { link: AgentToolLink }) {
 export function ChatMessage({
   message,
   toolLinks,
+  footer,
 }: {
   message: MessageDto;
   toolLinks?: readonly AgentToolLink[] | undefined;
+  /** Extra content rendered under the bubble (e.g. a run activity trace). */
+  footer?: ReactNode;
 }) {
   return (
     <div className={`chat-msg ${message.role}`}>
@@ -50,6 +54,7 @@ export function ChatMessage({
             ))}
           </div>
         ) : null}
+        {footer}
       </div>
     </div>
   );

@@ -32,6 +32,10 @@ class CapabilityClientError(RuntimeError):
 class CapabilityResult:
     summary: str
     links: tuple[dict[str, str], ...] = ()
+    # Full structured result of the capability (the gateway's `data`). Surfaced
+    # so the write's output can be tracked end to end; it is the user's own
+    # entitled business data, never raw SQL or rows.
+    data: Any = None
 
 
 class CapabilityClient(Protocol):
@@ -112,4 +116,5 @@ class HttpCapabilityClient:
         return CapabilityResult(
             summary=summary if isinstance(summary, str) else "",
             links=tuple(links),
+            data=payload.get("data"),
         )

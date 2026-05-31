@@ -324,9 +324,20 @@ services:
         condition: service_healthy
       db-mcp-server:
         condition: service_healthy
+      redis-agent:
+        condition: service_healthy
+      # Startup ordering only (keys exist before first trace). Not a hard runtime
+      # dependency: tracing fails soft if Langfuse is unreachable.
+      langfuse-web:
+        condition: service_started
     environment:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       AGENT_PORT: '8003'
+      # Read-only access to the orchestrator-aligned shared conversation history
+      # plus this agent's own working section. Owner-scoped + TTL'd; the agent
+      # never writes history. Use rediss:// (TLS) outside local.
+      REDIS_AGENT_URL: ${REDIS_AGENT_URL:-redis://:nova_redis_agent_password@redis-agent:6379}
+      AGENT_STATE_ENABLED: ${AGENT_STATE_ENABLED:-true}
       # Issuer must match the token `iss` (browser-facing Keycloak URL); JWKS is
       # fetched over the internal Docker network.
       KEYCLOAK_ISSUER_URL: ${KEYCLOAK_ISSUER_URL:-http://localhost:8080/realms/nova}
@@ -356,6 +367,15 @@ services:
       LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0}
       LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-30}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      # Langfuse observability. Auto-wired via the pinned public/secret keys the
+      # langfuse-web container seeds headlessly (project nova-chat). The agent
+      # joins the orchestrator's per-run trace, so its spans nest under the same
+      # context. Tracing is fail-soft: a Langfuse outage never fails a run.
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-nova-chat-dev}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-nova-chat-dev}
+      LANGFUSE_TRACING_ENABLED: ${LANGFUSE_TRACING_ENABLED:-true}
+      LANGFUSE_ENVIRONMENT: ${LANGFUSE_ENVIRONMENT:-development}
     healthcheck:
       test:
         - 'CMD-SHELL'
@@ -407,13 +427,24 @@ services:
         condition: service_completed_successfully
       redis-orchestrator:
         condition: service_healthy
+      redis-agent:
+        condition: service_healthy
       keycloak:
         condition: service_healthy
+      # Startup ordering only (keys exist before first trace). Not a hard runtime
+      # dependency: tracing fails soft if Langfuse is unreachable.
+      langfuse-web:
+        condition: service_started
     environment:
       ORCHESTRATOR_ROLE: worker
       LOG_LEVEL: ${LOG_LEVEL:-info}
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://:nova_redis_orchestrator_password@redis-orchestrator:6379/0}
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://:nova_redis_orchestrator_password@redis-orchestrator:6379/1}
+      # Shared agent working-state + orchestrator-aligned conversation history.
+      # The worker is the single writer of the common history; agents read it.
+      # Owner-scoped, TTL'd, secret-stripped; use rediss:// (TLS) outside local.
+      REDIS_AGENT_URL: ${REDIS_AGENT_URL:-redis://:nova_redis_agent_password@redis-agent:6379}
+      AGENT_STATE_ENABLED: ${AGENT_STATE_ENABLED:-true}
       AGENTS_DATABASE_URL: postgresql+psycopg://${POSTGRES_AGENTS_USER:-nova_agents}:${POSTGRES_AGENTS_PASSWORD:-nova_agents_password}@postgres-agents:5432/${POSTGRES_AGENTS_DB:-nova_agents}
       KEYCLOAK_ISSUER_URL: ${KEYCLOAK_ISSUER_URL:-http://localhost:8080/realms/nova}
       KEYCLOAK_JWKS_URI: ${KEYCLOAK_JWKS_URI:-http://keycloak:8080/realms/nova/protocol/openid-connect/certs}
@@ -436,6 +467,10 @@ services:
       # network with an audience-restricted (nova-agent-sql-analyst) token.
       SQL_ANALYST_AGENT_URL: ${SQL_ANALYST_AGENT_URL:-http://at-sql-analyser:8003}
       SQL_ANALYST_AGENT_AUDIENCE: ${SQL_ANALYST_AGENT_AUDIENCE:-nova-agent-sql-analyst}
+      # Outbound A2A wall-clock budget. MUST exceed the agent's own
+      # AGENT_TOTAL_TIMEOUT_S (default 120) plus one in-flight LLM call, or the
+      # worker aborts a still-working agent and records a false failure.
+      AGENT_REQUEST_TIMEOUT_S: ${AGENT_REQUEST_TIMEOUT_S:-180}
       # LLM powering autonomous reasoning/critique/compose (OpenAI). Required for
       # the worker role; the gateway role does not reason.
       OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
@@ -443,6 +478,15 @@ services:
       LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0}
       LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-30}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      # Langfuse observability. The worker opens the per-run root trace (one trace
+      # per run, deterministic from runId) and propagates it to agents over A2A so
+      # every node, LLM call, and tool hop nests under one shared context. Tracing
+      # is fail-soft: a Langfuse outage never fails a run.
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-nova-chat-dev}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-nova-chat-dev}
+      LANGFUSE_TRACING_ENABLED: ${LANGFUSE_TRACING_ENABLED:-true}
+      LANGFUSE_ENVIRONMENT: ${LANGFUSE_ENVIRONMENT:-development}
     command: ['celery', '-A', 'nova_orchestrator.celery_app', 'worker', '--loglevel=info', '--queues=orchestrator.longrunning', '--concurrency=2']
 
   # Webhook dispatcher (transactional outbox poller). Runs in its own worker pool
@@ -493,9 +537,213 @@ services:
     ports:
       - '5173:80'
 
+  # ---------------------------------------------------------------------------
+  # Langfuse v3 (self-hosted, OpenTelemetry-native LLM observability).
+  #
+  # Dedicated, isolated datastores (own Postgres/ClickHouse/Redis/MinIO) so the
+  # business `nova` DB, `postgres-agents`, and the three Nova Redis instances
+  # stay cleanly separated. Only langfuse-web is published to the host (3100, to
+  # avoid clashing with the API on 3000). The reasoning services (celery-worker,
+  # at-sql-analyser) auto-wire to the project via the pinned public/secret keys
+  # seeded headlessly below.
+  # ---------------------------------------------------------------------------
+
+  langfuse-postgres:
+    image: postgres:17-alpine
+    container_name: nova-langfuse-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD:-langfuse_pg_password}
+      POSTGRES_DB: postgres
+      # ClickHouse and Postgres MUST run in UTC or analytics queries return wrong
+      # or empty results (Langfuse self-host requirement).
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - nova-langfuse-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    container_name: nova-langfuse-clickhouse
+    user: '101:101'
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-langfuse_ch_password}
+      TZ: UTC
+    volumes:
+      - nova-langfuse-clickhouse-data:/var/lib/clickhouse
+      - nova-langfuse-clickhouse-logs:/var/log/clickhouse-server
+    healthcheck:
+      test:
+        - 'CMD-SHELL'
+        - 'wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1'
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  langfuse-minio:
+    image: minio/minio
+    container_name: nova-langfuse-minio
+    entrypoint: sh
+    # Create the 'langfuse' bucket before starting the server.
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_ROOT_PASSWORD:-langfuse_minio_password}
+    volumes:
+      - nova-langfuse-minio-data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  langfuse-redis:
+    image: redis:7-alpine
+    container_name: nova-langfuse-redis
+    command:
+      - redis-server
+      - --requirepass
+      - ${LANGFUSE_REDIS_PASSWORD:-langfuse_redis_password}
+      - --maxmemory-policy
+      - noeviction
+    environment:
+      REDISCLI_AUTH: ${LANGFUSE_REDIS_PASSWORD:-langfuse_redis_password}
+    volumes:
+      - nova-langfuse-redis-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    container_name: nova-langfuse-worker
+    restart: always
+    depends_on: &langfuse-deps
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+    environment: &langfuse-env
+      DATABASE_URL: postgresql://postgres:${LANGFUSE_POSTGRES_PASSWORD:-langfuse_pg_password}@langfuse-postgres:5432/postgres
+      SALT: ${LANGFUSE_SALT:-changeme-langfuse-salt}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      TELEMETRY_ENABLED: 'false'
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: 'false'
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-langfuse_ch_password}
+      CLICKHOUSE_CLUSTER_ENABLED: 'false'
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: '6379'
+      REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD:-langfuse_redis_password}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_ROOT_PASSWORD:-langfuse_minio_password}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: 'true'
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: 'events/'
+
+  langfuse-web:
+    image: langfuse/langfuse:3
+    container_name: nova-langfuse-web
+    restart: always
+    depends_on: *langfuse-deps
+    environment:
+      <<: *langfuse-env
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3100}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-changeme-langfuse-nextauth-secret}
+      # Headless initialization (idempotent). Creates org `nova`, project
+      # `nova-chat`, the admin user, and PINS the project keys so the agents can
+      # auto-wire with no manual UI step. LANGFUSE_INIT_ORG_ID is the gate: if it
+      # is unset, all other LANGFUSE_INIT_* values are silently ignored. Do NOT
+      # double-quote these values.
+      LANGFUSE_INIT_ORG_ID: nova
+      LANGFUSE_INIT_ORG_NAME: nova
+      LANGFUSE_INIT_PROJECT_ID: nova-chat
+      LANGFUSE_INIT_PROJECT_NAME: nova-chat
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-nova-chat-dev}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-nova-chat-dev}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@test.com}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-Admin}
+      # Langfuse enforces a minimum 8-character init password, so plain `admin`
+      # is rejected at boot; `admin123` is the shortest compliant default.
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-admin123}
+    ports:
+      - '3100:3000'
+    healthcheck:
+      # The Next.js server binds to the container hostname, not loopback, so the
+      # probe must target $HOSTNAME ($$ escapes compose so the container shell
+      # expands it at runtime).
+      test: ['CMD-SHELL', 'wget -qO- http://$$HOSTNAME:3000/api/public/health || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # One-shot: seed the custom kimi-2.6 model price via the native Models API.
+  # OpenAI model prices ship built into Langfuse, so only kimi-2.6 needs adding.
+  # Idempotent: skips if a kimi-2.6 definition already exists.
+  langfuse-seed:
+    image: curlimages/curl:8.11.1
+    container_name: nova-langfuse-seed
+    depends_on:
+      langfuse-web:
+        condition: service_healthy
+    environment:
+      LANGFUSE_HOST: http://langfuse-web:3000
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-nova-chat-dev}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-nova-chat-dev}
+      # USD price per single token. Fill with the current Moonshot kimi-2.6 rates.
+      KIMI_INPUT_PRICE: ${KIMI_INPUT_PRICE:-0.0}
+      KIMI_OUTPUT_PRICE: ${KIMI_OUTPUT_PRICE:-0.0}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -eu
+        echo "Seeding kimi-2.6 model price (idempotent)..."
+        # matchPattern uses a [.] character class (not \.) so the JSON stays valid
+        # after shell quoting; it matches the literal dot in "kimi-2.6". The POST
+        # is the source of truth for idempotency: Langfuse rejects a duplicate
+        # model name with HTTP 400 ("already exists"), which we treat as success.
+        status=$$(curl -s -o /tmp/seed_resp -w "%{http_code}" \
+          -u "$$LANGFUSE_PUBLIC_KEY:$$LANGFUSE_SECRET_KEY" \
+          -H 'Content-Type: application/json' \
+          -X POST "$$LANGFUSE_HOST/api/public/models" \
+          -d "{\"modelName\":\"kimi-2.6\",\"matchPattern\":\"(?i)^kimi-2[.]6$$\",\"unit\":\"TOKENS\",\"inputPrice\":$$KIMI_INPUT_PRICE,\"outputPrice\":$$KIMI_OUTPUT_PRICE}")
+        if [ "$$status" = "200" ] || [ "$$status" = "201" ]; then
+          echo "Seeded kimi-2.6."
+        elif grep -q "already exists" /tmp/seed_resp; then
+          echo "kimi-2.6 already present; skipping."
+        else
+          echo "Failed to seed kimi-2.6 (HTTP $$status):"; cat /tmp/seed_resp; exit 1
+        fi
+    restart: 'no'
+
 volumes:
   nova-postgres-data:
   nova-redis-cache-data:
   nova-redis-agent-data:
   nova-redis-orchestrator-data:
   nova-postgres-agents-data:
+  nova-langfuse-postgres-data:
+  nova-langfuse-clickhouse-data:
+  nova-langfuse-clickhouse-logs:
+  nova-langfuse-minio-data:
+  nova-langfuse-redis-data:

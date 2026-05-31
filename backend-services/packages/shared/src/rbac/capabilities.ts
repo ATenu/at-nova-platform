@@ -102,6 +102,144 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     risk: 'low',
     resourceScoped: false,
   },
+  // --- Conversational resolver + detail reads --------------------------------
+  // These let the orchestrator resolve a human reference (name/email/title) to
+  // the record id needed by a scoped read/write, so the user never has to type a
+  // UUID. Each mirrors the permission of its equivalent REST read; rows still go
+  // through the user's own permission-gated business service (NOT the redacted
+  // `mcp_read` free-query surface), so they may return display names the entitled
+  // user is allowed to see.
+  {
+    id: 'customers.search',
+    kind: 'agent-skill',
+    mode: 'read',
+    requiredPermissions: ['read-customers'],
+    risk: 'low',
+    resourceScoped: false,
+  },
+  {
+    id: 'customers.get',
+    kind: 'agent-skill',
+    mode: 'read',
+    requiredPermissions: ['read-customers'],
+    risk: 'low',
+    resourceScoped: true,
+  },
+  {
+    id: 'products.search',
+    kind: 'agent-skill',
+    mode: 'read',
+    requiredPermissions: ['read-sales'],
+    risk: 'low',
+    resourceScoped: false,
+  },
+  {
+    id: 'products.get',
+    kind: 'agent-skill',
+    mode: 'read',
+    requiredPermissions: ['read-sales'],
+    risk: 'low',
+    resourceScoped: true,
+  },
+  {
+    id: 'sales.list',
+    kind: 'agent-skill',
+    mode: 'read',
+    requiredPermissions: ['read-sales'],
+    risk: 'low',
+    resourceScoped: false,
+  },
+  {
+    id: 'sales.get',
+    kind: 'agent-skill',
+    mode: 'read',
+    requiredPermissions: ['read-sales'],
+    risk: 'low',
+    resourceScoped: true,
+  },
+  {
+    id: 'issues.list',
+    kind: 'agent-skill',
+    mode: 'read',
+    requiredPermissions: ['read-issues'],
+    risk: 'low',
+    resourceScoped: false,
+  },
+  {
+    id: 'issues.get',
+    kind: 'agent-skill',
+    mode: 'read',
+    requiredPermissions: ['read-issues'],
+    risk: 'low',
+    resourceScoped: true,
+  },
+  {
+    id: 'actions.list',
+    kind: 'agent-skill',
+    mode: 'read',
+    requiredPermissions: ['read-actions'],
+    risk: 'low',
+    resourceScoped: false,
+  },
+  {
+    id: 'actions.get',
+    kind: 'agent-skill',
+    mode: 'read',
+    requiredPermissions: ['read-actions'],
+    risk: 'low',
+    resourceScoped: true,
+  },
+  // --- Domain writes (mirror the permission of the equivalent REST mutation) --
+  // RBAC-gated, low risk like the existing writes: a write runs only if the
+  // acting user's entitlement snapshot grants the required permission.
+  {
+    id: 'actions.addComment',
+    kind: 'agent-skill',
+    mode: 'write',
+    requiredPermissions: ['write-actions'],
+    risk: 'low',
+    resourceScoped: true,
+  },
+  {
+    id: 'actions.update',
+    kind: 'agent-skill',
+    mode: 'write',
+    requiredPermissions: ['write-actions'],
+    risk: 'low',
+    resourceScoped: true,
+  },
+  {
+    id: 'issues.update',
+    kind: 'agent-skill',
+    mode: 'write',
+    requiredPermissions: ['write-issues'],
+    risk: 'low',
+    resourceScoped: true,
+  },
+  {
+    id: 'sop.create',
+    kind: 'agent-skill',
+    mode: 'write',
+    requiredPermissions: ['write-sop'],
+    risk: 'low',
+    resourceScoped: false,
+  },
+  {
+    id: 'sop.update',
+    kind: 'agent-skill',
+    mode: 'write',
+    requiredPermissions: ['write-sop'],
+    risk: 'low',
+    resourceScoped: true,
+  },
+  {
+    id: 'sop.addVersion',
+    kind: 'agent-skill',
+    mode: 'write',
+    requiredPermissions: ['write-sop'],
+    risk: 'low',
+    resourceScoped: true,
+  },
   // --- Free-query data layer (DB MCP server + `at-sql-analyser`) -------------
   // All gated by the single coarse `read-data` permission (decision D1); the
   // exposed surface is further constrained by the curated `mcp_read` views +

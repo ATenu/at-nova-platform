@@ -5,7 +5,12 @@ import { asyncHandler } from '../../http/async-handler';
 import { validateRequest } from '../../http/validate';
 import { AgentRunController } from './agent-run.controller';
 import type { AgentRunService } from './agent-run.service';
-import { createAgentRunBodySchema, listEventsQuerySchema, runIdParamsSchema } from './agent-run.schema';
+import {
+  createAgentRunBodySchema,
+  listEventsQuerySchema,
+  listRunsQuerySchema,
+  runIdParamsSchema,
+} from './agent-run.schema';
 
 // The chat entrypoint (`POST /a2a/chat`) is the single way to create an agent
 // run: it captures the entitlement snapshot and enqueues the orchestration task
@@ -61,6 +66,15 @@ export function createAgentRunRouter(deps: AgentRunRouterDeps): Router {
   const router = Router();
   const controller = new AgentRunController(deps.service);
 
+  // Listed before `/:runId` so the literal collection route is matched first.
+  router.get(
+    '/',
+    deps.authenticate,
+    authorize(getRunPolicy),
+    validateRequest({ query: listRunsQuerySchema }),
+    asyncHandler(controller.list),
+  );
+
   router.get(
     '/:runId',
     deps.authenticate,
@@ -75,6 +89,14 @@ export function createAgentRunRouter(deps: AgentRunRouterDeps): Router {
     authorize(streamEventsPolicy),
     validateRequest({ params: runIdParamsSchema, query: listEventsQuerySchema }),
     asyncHandler(controller.streamEvents),
+  );
+
+  router.get(
+    '/:runId/trace',
+    deps.authenticate,
+    authorize(streamEventsPolicy),
+    validateRequest({ params: runIdParamsSchema }),
+    asyncHandler(controller.getTrace),
   );
 
   router.post(

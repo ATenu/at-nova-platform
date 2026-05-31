@@ -61,6 +61,7 @@ class Reasoner(Protocol):
         goal: str,
         schema: Sequence[SchemaView],
         history: Sequence[QueryAttempt],
+        conversation_history: str = "",
     ) -> QueryDecision: ...
 
     async def critique(
@@ -137,11 +138,17 @@ class OpenAIReasoner:
         goal: str,
         schema: Sequence[SchemaView],
         history: Sequence[QueryAttempt],
+        conversation_history: str = "",
     ) -> QueryDecision:
         return await self._structured(
             QueryDecision,
             prompts.PROPOSE_QUERY_SYSTEM,
-            prompts.propose_query_user(goal=goal, schema=schema, history=history),
+            prompts.propose_query_user(
+                goal=goal,
+                schema=schema,
+                history=history,
+                conversation_history=conversation_history,
+            ),
         )
 
     async def critique(

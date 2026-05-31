@@ -55,6 +55,7 @@ class FakeReasoner:
         self._answer = answer
         self._writes = list(writes)
         self.seen_authorized_writes: list[tuple[str, ...]] = []
+        self.seen_conversation_history: str = ""
 
     async def propose_query(
         self,
@@ -62,7 +63,9 @@ class FakeReasoner:
         goal: str,
         schema: Sequence[SchemaView],
         history: Sequence[QueryAttempt],
+        conversation_history: str = "",
     ) -> QueryDecision:
+        self.seen_conversation_history = conversation_history
         index = len(history)
         if index < len(self._queries):
             return self._queries[index]

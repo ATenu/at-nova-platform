@@ -1,5 +1,5 @@
 import { http } from './httpClient';
-import type { AgentRunDto, CreateAgentRunRequest } from './types';
+import type { AgentRunDto, AgentRunTraceDto, CreateAgentRunRequest } from './types';
 
 /**
  * Asynchronous agent-run control plane. The chat entrypoint (`POST /a2a/chat`)
@@ -30,4 +30,20 @@ export function getAgentRun(runId: string): Promise<AgentRunDto> {
 
 export function cancelAgentRun(runId: string): Promise<AgentRunDto> {
   return http.post<AgentRunDto>(`/agent-runs/${runId}/cancel`);
+}
+
+/**
+ * The caller's runs for a conversation. Used to map each persisted assistant
+ * message back to the run whose tool/agent activity produced it, so the trace
+ * stays reviewable after the live SSE stream ends.
+ */
+export function listConversationRuns(conversationId: string): Promise<readonly AgentRunDto[]> {
+  return http.get<readonly AgentRunDto[]>(
+    `/agent-runs?conversationId=${encodeURIComponent(conversationId)}`,
+  );
+}
+
+/** Full user-visibility trace (tool/agent calls + IO) for a completed run. */
+export function getAgentRunTrace(runId: string): Promise<AgentRunTraceDto> {
+  return http.get<AgentRunTraceDto>(`/agent-runs/${runId}/trace`);
 }

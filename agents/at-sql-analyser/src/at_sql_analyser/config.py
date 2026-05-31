@@ -103,6 +103,14 @@ class AgentConfig:
     llm_timeout_s: float
     openai_base_url: str | None
 
+    # Shared agent working-state + aligned conversation history (redis-agent).
+    # Optional: unset/disabled keeps the agent stateless/single-turn as before.
+    redis_agent_url: str | None
+    agent_state_enabled: bool
+    agent_state_key_prefix: str
+    agent_state_ttl_s: int
+    agent_history_read_limit: int
+
 
 def load_config() -> AgentConfig:
     issuer = _require("KEYCLOAK_ISSUER_URL")
@@ -138,4 +146,9 @@ def load_config() -> AgentConfig:
         llm_temperature=_float("LLM_TEMPERATURE", 0.0),
         llm_timeout_s=_float("LLM_TIMEOUT_S", 30.0),
         openai_base_url=os.environ.get("OPENAI_BASE_URL") or None,
+        redis_agent_url=os.environ.get("REDIS_AGENT_URL") or None,
+        agent_state_enabled=_bool("AGENT_STATE_ENABLED", True),
+        agent_state_key_prefix=_optional("AGENT_STATE_KEY_PREFIX", "nova:agent:"),
+        agent_state_ttl_s=_int("AGENT_STATE_TTL_SECONDS", 7200),
+        agent_history_read_limit=_int("AGENT_HISTORY_READ_LIMIT", 20),
     )

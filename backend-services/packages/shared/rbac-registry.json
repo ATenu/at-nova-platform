@@ -170,6 +170,166 @@
       "resourceScoped": false
     },
     {
+      "id": "customers.search",
+      "kind": "agent-skill",
+      "mode": "read",
+      "requiredPermissions": [
+        "read-customers"
+      ],
+      "risk": "low",
+      "resourceScoped": false
+    },
+    {
+      "id": "customers.get",
+      "kind": "agent-skill",
+      "mode": "read",
+      "requiredPermissions": [
+        "read-customers"
+      ],
+      "risk": "low",
+      "resourceScoped": true
+    },
+    {
+      "id": "products.search",
+      "kind": "agent-skill",
+      "mode": "read",
+      "requiredPermissions": [
+        "read-sales"
+      ],
+      "risk": "low",
+      "resourceScoped": false
+    },
+    {
+      "id": "products.get",
+      "kind": "agent-skill",
+      "mode": "read",
+      "requiredPermissions": [
+        "read-sales"
+      ],
+      "risk": "low",
+      "resourceScoped": true
+    },
+    {
+      "id": "sales.list",
+      "kind": "agent-skill",
+      "mode": "read",
+      "requiredPermissions": [
+        "read-sales"
+      ],
+      "risk": "low",
+      "resourceScoped": false
+    },
+    {
+      "id": "sales.get",
+      "kind": "agent-skill",
+      "mode": "read",
+      "requiredPermissions": [
+        "read-sales"
+      ],
+      "risk": "low",
+      "resourceScoped": true
+    },
+    {
+      "id": "issues.list",
+      "kind": "agent-skill",
+      "mode": "read",
+      "requiredPermissions": [
+        "read-issues"
+      ],
+      "risk": "low",
+      "resourceScoped": false
+    },
+    {
+      "id": "issues.get",
+      "kind": "agent-skill",
+      "mode": "read",
+      "requiredPermissions": [
+        "read-issues"
+      ],
+      "risk": "low",
+      "resourceScoped": true
+    },
+    {
+      "id": "actions.list",
+      "kind": "agent-skill",
+      "mode": "read",
+      "requiredPermissions": [
+        "read-actions"
+      ],
+      "risk": "low",
+      "resourceScoped": false
+    },
+    {
+      "id": "actions.get",
+      "kind": "agent-skill",
+      "mode": "read",
+      "requiredPermissions": [
+        "read-actions"
+      ],
+      "risk": "low",
+      "resourceScoped": true
+    },
+    {
+      "id": "actions.addComment",
+      "kind": "agent-skill",
+      "mode": "write",
+      "requiredPermissions": [
+        "write-actions"
+      ],
+      "risk": "low",
+      "resourceScoped": true
+    },
+    {
+      "id": "actions.update",
+      "kind": "agent-skill",
+      "mode": "write",
+      "requiredPermissions": [
+        "write-actions"
+      ],
+      "risk": "low",
+      "resourceScoped": true
+    },
+    {
+      "id": "issues.update",
+      "kind": "agent-skill",
+      "mode": "write",
+      "requiredPermissions": [
+        "write-issues"
+      ],
+      "risk": "low",
+      "resourceScoped": true
+    },
+    {
+      "id": "sop.create",
+      "kind": "agent-skill",
+      "mode": "write",
+      "requiredPermissions": [
+        "write-sop"
+      ],
+      "risk": "low",
+      "resourceScoped": false
+    },
+    {
+      "id": "sop.update",
+      "kind": "agent-skill",
+      "mode": "write",
+      "requiredPermissions": [
+        "write-sop"
+      ],
+      "risk": "low",
+      "resourceScoped": true
+    },
+    {
+      "id": "sop.addVersion",
+      "kind": "agent-skill",
+      "mode": "write",
+      "requiredPermissions": [
+        "write-sop"
+      ],
+      "risk": "low",
+      "resourceScoped": true
+    },
+    {
       "id": "data.schema.describe",
       "kind": "mcp-tool",
       "mode": "read",

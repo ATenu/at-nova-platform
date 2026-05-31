@@ -2,8 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { listConversations, getConversation } from '@/api/chat.api';
-import { createAgentRun, newIdempotencyKey } from '@/api/agentRuns.api';
-import type { AgentRunEventDto, MessageDto } from '@/api/types';
+import { createAgentRun, listConversationRuns, newIdempotencyKey } from '@/api/agentRuns.api';
+import {
+  TERMINAL_AGENT_RUN_STATUSES,
+  type AgentRunEventDto,
+  type AgentRunStatus,
+  type MessageDto,
+} from '@/api/types';
 import { queryKeys } from '@/api/queryClient';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -14,35 +19,28 @@ import { formatRelative } from '@/lib/dates';
 import { ChatMessage } from './ChatMessage';
 import { ChatComposer } from './ChatComposer';
 import { useAgentRunEvents } from './useAgentRunEvents';
+import { LiveRunTrace, RunTracePanel } from './RunTrace';
+
+/**
+ * Derive the run's terminal status from its events (the terminal frame's type
+ * is `run.{status}`), defaulting to `completed` only if no terminal frame is
+ * present. Keeps the seeded trace cache's status accurate for failed/canceled
+ * runs without widening the SSE hook's API.
+ */
+function terminalStatusFromEvents(events: readonly AgentRunEventDto[]): AgentRunStatus {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const match = events[i]!.type.match(/^run\.(.+)$/);
+    const status = match?.[1] as AgentRunStatus | undefined;
+    if (status && TERMINAL_AGENT_RUN_STATUSES.includes(status)) {
+      return status;
+    }
+  }
+  return 'completed';
+}
 
 interface PendingTurn {
   readonly text: string;
   readonly status: 'sending' | 'error';
-}
-
-/** Render a `user`-visibility run event as a short progress line (or skip it). */
-function describeEvent(event: AgentRunEventDto): string | null {
-  const capability = typeof event.payload.capability === 'string' ? event.payload.capability : '';
-  switch (event.type) {
-    case 'run.started':
-      return 'Starting…';
-    case 'planner.started':
-      return 'Planning your request…';
-    case 'tool.call.started':
-      return capability ? `Running ${capability}…` : 'Running a step…';
-    case 'tool.call.completed':
-      return typeof event.payload.summary === 'string' && event.payload.summary
-        ? event.payload.summary
-        : `Finished ${capability}.`;
-    case 'tool.call.failed':
-      return `A step did not complete${capability ? ` (${capability})` : ''}.`;
-    case 'run.failed':
-      return 'The run failed.';
-    case 'run.canceled':
-      return 'Run canceled.';
-    default:
-      return null;
-  }
 }
 
 export function AgentChatPage() {
@@ -59,6 +57,25 @@ export function AgentChatPage() {
     queryFn: () => getConversation(activeId!),
     enabled: Boolean(activeId),
   });
+
+  // Maps each persisted assistant message to the run whose tool/agent activity
+  // produced it, so a past turn's trace can be re-loaded from the durable event
+  // store on demand. Ownership-scoped server-side (default deny).
+  const conversationRuns = useQuery({
+    queryKey: activeId ? queryKeys.conversationRuns(activeId) : ['conversations', 'none', 'runs'],
+    queryFn: () => listConversationRuns(activeId!),
+    enabled: Boolean(activeId),
+  });
+
+  const runByMessageId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const run of conversationRuns.data ?? []) {
+      if (run.responseMessageId) {
+        map.set(run.responseMessageId, run.runId);
+      }
+    }
+    return map;
+  }, [conversationRuns.data]);
 
   const run = useAgentRunEvents(runId, { enabled: runId !== null });
 
@@ -97,17 +114,26 @@ export function AgentChatPage() {
   });
 
   // When the run reaches a terminal event, refresh the conversation so the
-  // assistant message the worker persisted (via the tool gateway) appears. This
-  // effect performs query invalidation only (no setState); `isRunActive` already
-  // hides the live progress bubble once the run completes.
+  // assistant message the worker persisted (via the tool gateway) appears. Seed
+  // the durable trace cache from the live SSE buffer so the persisted panel can
+  // render immediately without waiting on another round trip.
   useEffect(() => {
-    if (runId && run.isComplete) {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
-      if (activeId) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.conversation(activeId) });
-      }
+    if (!runId || !run.isComplete) {
+      return;
     }
-  }, [runId, run.isComplete, activeId, queryClient]);
+    if (run.events.length > 0) {
+      queryClient.setQueryData(queryKeys.runTrace(runId), {
+        runId,
+        status: terminalStatusFromEvents(run.events),
+        events: run.events,
+      });
+    }
+    void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
+    if (activeId) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversation(activeId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversationRuns(activeId) });
+    }
+  }, [runId, run.isComplete, run.events, activeId, queryClient]);
 
   const send = (message: string) => {
     setPending({ text: message, status: 'sending' });
@@ -126,22 +152,11 @@ export function AgentChatPage() {
     [conversation.data],
   );
 
-  const progressLines = useMemo<readonly string[]>(() => {
-    const lines: string[] = [];
-    for (const event of run.events) {
-      const line = describeEvent(event);
-      if (line) {
-        lines.push(line);
-      }
-    }
-    return lines;
-  }, [run.events]);
-
   const isRunActive = runId !== null && !run.isComplete;
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages, pending, progressLines]);
+  }, [messages, pending, run.events]);
 
   const visibleMessages = messages.filter((message) => message.role !== 'system');
   const hasContent = visibleMessages.length > 0 || pending !== null || isRunActive;
@@ -198,9 +213,17 @@ export function AgentChatPage() {
             </div>
           ) : (
             <>
-              {visibleMessages.map((message) => (
-                <ChatMessage key={message.id} message={message} />
-              ))}
+              {visibleMessages.map((message) => {
+                const traceRunId =
+                  message.role === 'assistant' ? runByMessageId.get(message.id) : undefined;
+                return (
+                  <ChatMessage
+                    key={message.id}
+                    message={message}
+                    footer={traceRunId ? <RunTracePanel runId={traceRunId} /> : undefined}
+                  />
+                );
+              })}
               {pending && pending.status === 'error' ? (
                 <>
                   <div className="chat-msg user">
@@ -224,25 +247,14 @@ export function AgentChatPage() {
                   <span className="chat-role-ico" aria-hidden>
                     <Icon name="sparkles" size={16} />
                   </span>
-                  <div className="stack" style={{ gap: 6, minWidth: 0 }}>
-                    {progressLines.length > 0 ? (
-                      progressLines.map((line, index) => (
-                        <div key={`${index}-${line}`} className="chat-bubble">
-                          {line}
-                        </div>
-                      ))
-                    ) : (
-                      <div className="chat-bubble">
-                        <span className="typing" aria-label="Nova is working">
-                          <span /> <span /> <span />
+                  <div className="stack" style={{ gap: 6, minWidth: 0, flex: 1 }}>
+                    <LiveRunTrace events={run.events}>
+                      {run.error ? (
+                        <span className="text-sm" style={{ color: 'var(--danger)', marginTop: 6 }}>
+                          {run.error}
                         </span>
-                      </div>
-                    )}
-                    {run.error ? (
-                      <span className="text-sm" style={{ color: 'var(--danger)' }}>
-                        {run.error}
-                      </span>
-                    ) : null}
+                      ) : null}
+                    </LiveRunTrace>
                   </div>
                 </div>
               ) : null}

@@ -14,6 +14,7 @@ No secret, token, or PII is placed in task payloads, events, or logs.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from celery import Task
@@ -21,6 +22,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from .agent_client import AgentClient
+from .agent_state import AgentStateStore
 from .agents import AgentRegistry, build_default_registry
 from .authz.snapshot import EntitlementSnapshot, SnapshotIntegrityError, verify_snapshot
 from .celery_app import app
@@ -60,6 +62,8 @@ def process_run(
     agent_client: AgentClient | None = None,
     registry: AgentRegistry | None = None,
     reasoner: Reasoner | None = None,
+    state_store_factory: Callable[[str], AgentStateStore | None] | None = None,
+    history_read_limit: int = 20,
 ) -> str:
     """Process a run to a terminal status and return that status.
 
@@ -135,6 +139,9 @@ def process_run(
             if run is None or run.status in TERMINAL_STATUSES:
                 return run.status if run else "missing"
             return _fail_closed(session, run, reason="reasoner_unavailable")
+    state_store = (
+        state_store_factory(snapshot.owner_subject) if state_store_factory is not None else None
+    )
     return run_graph(
         session_factory,
         run_id,
@@ -144,6 +151,8 @@ def process_run(
         max_steps=max_steps,
         agent_client=agent_client,
         registry=registry,
+        state_store=state_store,
+        history_read_limit=history_read_limit,
     )
 
 
@@ -194,7 +203,9 @@ def run_orchestration(
         request_audience_scopes=config.worker_request_audience_scopes,
     )
     gateway = ToolGatewayClient(base_url=config.nova_api_internal_url, tokens=tokens)
-    agent_client = AgentClient(tokens=tokens)
+    agent_client = AgentClient(
+        tokens=tokens, timeout_s=config.agent_request_timeout_s
+    )
     registry = build_default_registry(config)
     reasoner: Reasoner = OpenAIReasoner(
         api_key=config.openai_api_key,
@@ -203,6 +214,21 @@ def run_orchestration(
         timeout_s=config.llm_timeout_s,
         base_url=config.openai_base_url,
     )
+
+    def state_store_factory(owner_subject: str) -> AgentStateStore | None:
+        # Owner-scoped shared working state + aligned history (redis-agent).
+        # Disabled or unconfigured ⇒ the run stays stateless/single-turn.
+        if not config.agent_state_enabled or not config.redis_agent_url:
+            return None
+        return AgentStateStore(
+            owner_subject=owner_subject,
+            url=config.redis_agent_url,
+            key_prefix=config.agent_state_key_prefix,
+            state_ttl_s=config.agent_state_ttl_s,
+            history_ttl_s=config.agent_history_ttl_s,
+            history_max_entries=config.agent_history_max_entries,
+        )
+
     return process_run(
         get_session_factory(),
         run_id,
@@ -212,4 +238,6 @@ def run_orchestration(
         agent_client=agent_client,
         registry=registry,
         reasoner=reasoner,
+        state_store_factory=state_store_factory,
+        history_read_limit=config.agent_history_read_limit,
     )

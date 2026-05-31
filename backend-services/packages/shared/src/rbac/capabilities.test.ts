@@ -92,6 +92,66 @@ describe('capability catalog', () => {
     expect(capabilitiesForPermissions(noData).map((c) => c.id)).not.toContain('data.query.select');
   });
 
+  it('grants the new resolver/read capabilities by their mirrored read permission', () => {
+    // Reads follow their REST read permission.
+    expect(rolesGrantCapability(['sales-user'], 'customers.search')).toBe(true);
+    expect(rolesGrantCapability(['ops-compliance'], 'customers.search')).toBe(false);
+    expect(rolesGrantCapability(['sales-user'], 'products.search')).toBe(true);
+    expect(rolesGrantCapability(['customer-support'], 'sales.list')).toBe(true);
+    expect(rolesGrantCapability(['ops-compliance'], 'sales.get')).toBe(false);
+    expect(rolesGrantCapability(['customer-support'], 'issues.get')).toBe(true);
+    expect(rolesGrantCapability(['support-operations-user'], 'actions.list')).toBe(true);
+    expect(rolesGrantCapability(['ops-compliance'], 'actions.get')).toBe(false);
+  });
+
+  it('gates the new write capabilities on their mirrored write permission', () => {
+    // write-actions: support-operations-user + customer-support + admin, NOT sales-user.
+    for (const id of ['actions.addComment', 'actions.update']) {
+      expect(rolesGrantCapability(['support-operations-user'], id)).toBe(true);
+      expect(rolesGrantCapability(['customer-support'], id)).toBe(true);
+      expect(rolesGrantCapability(['sales-user'], id)).toBe(false);
+      expect(rolesGrantCapability(['ops-compliance'], id)).toBe(false);
+    }
+    // write-issues: support-operations-user + customer-support + admin, NOT sales-user.
+    expect(rolesGrantCapability(['support-operations-user'], 'issues.update')).toBe(true);
+    expect(rolesGrantCapability(['sales-user'], 'issues.update')).toBe(false);
+    // write-sop: admin + ops-compliance only.
+    for (const id of ['sop.create', 'sop.update', 'sop.addVersion']) {
+      expect(rolesGrantCapability(['ops-compliance'], id)).toBe(true);
+      expect(rolesGrantCapability(['admin'], id)).toBe(true);
+      expect(rolesGrantCapability(['sales-user'], id)).toBe(false);
+      expect(rolesGrantCapability(['customer-support'], id)).toBe(false);
+    }
+  });
+
+  it('keeps all new capabilities low-risk (no approval gate; RBAC-only)', () => {
+    const newIds = new Set([
+      'customers.search',
+      'customers.get',
+      'products.search',
+      'products.get',
+      'sales.list',
+      'sales.get',
+      'issues.list',
+      'issues.get',
+      'actions.list',
+      'actions.get',
+      'actions.addComment',
+      'actions.update',
+      'issues.update',
+      'sop.create',
+      'sop.update',
+      'sop.addVersion',
+    ]);
+    for (const capability of CAPABILITY_CATALOG) {
+      if (newIds.has(capability.id)) {
+        expect(capability.kind).toBe('agent-skill');
+        expect(capability.risk).toBe('low');
+        expect(capabilityRequiresApproval(capability)).toBe(false);
+      }
+    }
+  });
+
   it('treats data.act.write as a high-risk dispatch skill (no standalone write permission)', () => {
     const dispatch = getCapability('data.act.write');
     expect(dispatch).toBeDefined();

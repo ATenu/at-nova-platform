@@ -20,8 +20,10 @@ function silentLogger(): Logger {
   return logger;
 }
 
+type TestRole = 'sales-user' | 'ops-compliance' | 'support-operations-user';
+
 /** Build a run + a valid (correctly-hashed) entitlement snapshot for a role set. */
-function runWithEntitlement(roles: ('sales-user' | 'ops-compliance')[]): RunWithEntitlement {
+function runWithEntitlement(roles: TestRole[]): RunWithEntitlement {
   const snapshot = buildEntitlementSnapshot({
     ownerSubject: 'kc-1',
     ownerUserId: 'user-1',
@@ -67,9 +69,16 @@ function harness(found: RunWithEntitlement | null): Harness {
   const conversations = {} as unknown as ConversationRepository;
   // Sales report would call these; the deny paths must short-circuit first.
   const services = {
-    customers: { getCustomerById: async () => ({ fullName: 'Acme' }) },
+    customers: {
+      getCustomerById: async () => ({ fullName: 'Acme' }),
+      listCustomers: async () => ({ items: [], total: 0 }),
+    },
+    products: { listProducts: async () => ({ items: [], total: 0 }) },
     sales: { listSales: async () => ({ items: [], total: 0 }) },
-    issues: {},
+    issues: {
+      listIssues: async () => ({ items: [], total: 0 }),
+      updateIssue: async () => ({ id: 'issue-1', status: 'completed' }),
+    },
     actions: {},
     sops: {},
   } as unknown as CapabilityServices;
@@ -96,6 +105,31 @@ describe('ToolGatewayService', () => {
       service.executeCapability({ runId: 'run-1', capabilityId: 'sales.create', input: {} }),
     ).rejects.toBeInstanceOf(ForbiddenError);
     expect(audits.at(-1)).toMatchObject({ decision: 'deny', capability: 'sales.create' });
+  });
+
+  it('executes a newly added write (issues.update) for an entitled role and audits allow', async () => {
+    // support-operations-user holds write-issues, so issues.update is granted.
+    const { service, audits } = harness(runWithEntitlement(['support-operations-user']));
+    const result = await service.executeCapability({
+      runId: 'run-1',
+      capabilityId: 'issues.update',
+      input: { issueId: '33333333-3333-3333-3333-333333333333', status: 'completed' },
+    });
+    expect(result.capabilityId).toBe('issues.update');
+    expect(audits.at(-1)).toMatchObject({ decision: 'allow', capability: 'issues.update' });
+  });
+
+  it('denies a newly added write the snapshot does not grant (issues.update for sales-user)', async () => {
+    // sales-user lacks write-issues.
+    const { service, audits } = harness(runWithEntitlement(['sales-user']));
+    await expect(
+      service.executeCapability({
+        runId: 'run-1',
+        capabilityId: 'issues.update',
+        input: { issueId: '33333333-3333-3333-3333-333333333333', status: 'completed' },
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    expect(audits.at(-1)).toMatchObject({ decision: 'deny', capability: 'issues.update' });
   });
 
   it('fails closed when the entitlement snapshot hash is tampered', async () => {

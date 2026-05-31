@@ -13,6 +13,7 @@ import {
   toAgentRunEventDto,
   type AgentRunDto,
   type AgentRunEventDto,
+  type AgentRunTraceDto,
 } from './agent-run.dto';
 import type { CreateAgentRunBody } from './agent-run.schema';
 
@@ -114,6 +115,32 @@ export class AgentRunService {
     const run = await this.requireOwnedRun(runId, auth);
     const events = await this.runs.listUserEventsAfter(runId, afterSequence, MAX_EVENT_BATCH);
     return { run, events: events.map(toAgentRunEventDto) };
+  }
+
+  /**
+   * Owner-scoped list of a conversation's runs. Lets the client map each
+   * persisted assistant message to the run whose trace produced it, so the
+   * tool/agent activity is reviewable after the live stream ends. Default deny:
+   * only the caller's own runs are ever returned.
+   */
+  async listRunsForConversation(conversationId: string, auth: AuthContext): Promise<AgentRunDto[]> {
+    if (!auth.subject) {
+      throw new ValidationError('Token is missing a subject.');
+    }
+    const runs = await this.runs.listForOwnerAndConversation(auth.subject, conversationId);
+    return runs.map(toAgentRunDto);
+  }
+
+  /**
+   * Ownership-checked full `user`-visibility trace for one run (every tool/agent
+   * call with its bounded, secret-redacted input and output). Returned as JSON
+   * so a completed turn's activity can be rendered without re-opening the SSE
+   * stream. `internal`/`security` events are never included.
+   */
+  async getRunTrace(runId: string, auth: AuthContext): Promise<AgentRunTraceDto> {
+    const run = await this.requireOwnedRun(runId, auth);
+    const events = await this.runs.listAllUserEvents(runId);
+    return { runId: run.id, status: run.status, events: events.map(toAgentRunEventDto) };
   }
 
   /** Default-deny ownership check: the run must belong to the caller's subject. */

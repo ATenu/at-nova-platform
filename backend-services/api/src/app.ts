@@ -211,6 +211,7 @@ export function createApp(deps: AppDependencies): Express {
       conversationRepository,
       {
         customers: customerService,
+        products: productService,
         sales: saleService,
         issues: issueService,
         actions: actionService,

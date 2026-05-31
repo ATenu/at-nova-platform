@@ -65,6 +65,11 @@ class TaskInput:
     goal: str
     intent: Literal["read", "write"]
     approval_granted: bool = False
+    conversation_id: str = ""
+    # W3C trace identifiers supplied by the orchestrator so this task JOINS the
+    # run's shared Langfuse trace. Ids only (no tokens/PII); empty when absent.
+    langfuse_trace_id: str = ""
+    langfuse_parent_observation_id: str = ""
 
 
 @dataclass(frozen=True)

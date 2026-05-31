@@ -67,6 +67,8 @@ function buildService(parts: {
     ),
     requestCancel: jest.fn(async (run: AgentRun) => ({ ...run, cancelRequested: true })),
     listUserEventsAfter: jest.fn(async () => []),
+    listForOwnerAndConversation: jest.fn(async () => []),
+    listAllUserEvents: jest.fn(async () => []),
     ...parts.runs,
   } as unknown as AgentRunRepository;
 
@@ -166,5 +168,55 @@ describe('AgentRunService ownership (default deny)', () => {
     await expect(
       service.getEventBatch('run-9', 0, authFor('kc-OTHER', ['sales-user'])),
     ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('rejects cross-owner trace reads with 404', async () => {
+    const { service } = buildService({});
+    await expect(
+      service.getRunTrace('run-9', authFor('kc-OTHER', ['sales-user'])),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('returns an owned run trace with only its user-visibility events', async () => {
+    const listAllUserEvents = jest.fn(async () => [
+      {
+        id: 'evt-1',
+        sequence: 1,
+        type: 'tool.call.completed',
+        payload: { capability: 'sales.read', input: {}, output: { rows: 1 } },
+        createdAt: new Date('2026-05-31T00:00:01.000Z'),
+      },
+    ]);
+    const { service } = buildService({
+      runs: { listAllUserEvents } as unknown as Partial<AgentRunRepository>,
+    });
+    const trace = await service.getRunTrace('run-9', authFor('kc-1', ['sales-user']));
+    expect(trace.runId).toBe('run-9');
+    expect(trace.events).toHaveLength(1);
+    expect(trace.events[0]!.type).toBe('tool.call.completed');
+    expect(listAllUserEvents).toHaveBeenCalledWith('run-9');
+  });
+});
+
+describe('AgentRunService.listRunsForConversation (owner-scoped)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('scopes the query to the caller subject and exposes the response message id', async () => {
+    const listForOwnerAndConversation = jest.fn(async () => [
+      fakeRun({ id: 'run-a', responseRef: 'nova-msg://conv-1/msg-42' }),
+      fakeRun({ id: 'run-b', responseRef: null }),
+    ]);
+    const { service } = buildService({
+      runs: { listForOwnerAndConversation } as unknown as Partial<AgentRunRepository>,
+    });
+
+    const dtos = await service.listRunsForConversation('conv-1', authFor('kc-1', ['sales-user']));
+
+    expect(listForOwnerAndConversation).toHaveBeenCalledWith('kc-1', 'conv-1');
+    expect(dtos).toHaveLength(2);
+    expect(dtos[0]!.responseMessageId).toBe('msg-42');
+    // A not-yet-finalized run exposes no message link and never leaks the ref.
+    expect(dtos[1]!.responseMessageId).toBeNull();
+    expect(JSON.stringify(dtos)).not.toContain('nova-msg://');
   });
 });

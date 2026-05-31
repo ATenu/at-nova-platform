@@ -19,6 +19,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Langfuse tracing is optional at runtime: the observability layer degrades to a
+# no-op when the package is absent or unconfigured, so the gateway role and the
+# tests stay dependency-light. v3 is the OpenTelemetry-native SDK (native
+# @observe / langfuse.langchain.CallbackHandler).
+observability = ["langfuse>=3,<4"]
 dev = [
     "pytest>=8,<9",
     "pytest-asyncio>=0.24,<1",
@@ -42,7 +47,10 @@ target-version = "py311"
 select = ["E", "F", "I", "B", "UP", "ANN", "S"]
 # Tests may use asserts and fixed test vectors; the generated registry mirrors
 # the TypeScript source of truth verbatim and is intentionally dense.
-per-file-ignores = { "tests/*" = ["S101", "S105", "S106", "ANN"], "src/nova_orchestrator/authz/nova_authz.py" = ["E501", "I001"] }
+# The Langfuse wiring wraps an untyped third-party SDK at a fail-soft boundary:
+# Any is intrinsic to its surface (ANN401) and best-effort flush swallows errors
+# by design (S110). Both are deliberate, not lint evasion.
+per-file-ignores = { "tests/*" = ["S101", "S105", "S106", "ANN"], "src/nova_orchestrator/authz/nova_authz.py" = ["E501", "I001"], "src/nova_orchestrator/observability/langfuse_tracing.py" = ["ANN401", "S110"] }
 
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI dependency-injection markers are evaluated once at definition time.
@@ -58,6 +66,13 @@ disallow_untyped_decorators = false
 
 [[tool.mypy.overrides]]
 module = ["celery", "celery.*"]
+ignore_missing_imports = true
+
+# Langfuse is an optional runtime extra and ships no type stubs. The wiring
+# module degrades to a no-op when the package is absent, so missing imports here
+# are expected and must not taint the typed orchestration plane.
+[[tool.mypy.overrides]]
+module = ["langfuse", "langfuse.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

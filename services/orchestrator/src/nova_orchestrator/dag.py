@@ -54,6 +54,8 @@ class OrchestrationState(TypedDict, total=False):
 
     run_id: str
     prompt: str
+    conversation_id: str
+    history: str
     iteration: int
     route: str
     decision_action: str
