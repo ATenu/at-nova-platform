@@ -149,10 +149,12 @@ async function handlePost(
     },
   });
   transport.onclose = () => {
+    // Session teardown only: the SDK invokes onclose as part of transport.close()
+    // / server.close(). Calling server.close() here re-enters onclose and overflows
+    // the stack (RangeError: Maximum call stack size exceeded).
     if (transport.sessionId) {
       sessions.delete(transport.sessionId);
     }
-    void server.close();
   };
 
   try {
