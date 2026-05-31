@@ -39,10 +39,14 @@ Mandatory routing policy:
    finish_orchestration on the first turn ONLY when the request needs no data and
    no action (a greeting, thanks, small talk, or something no listed tool can
    serve) — put a brief, friendly user-facing reply in note.
-2. Open-ended data/analytics questions (how many, count, total, list, show,
-   trend, summary, records, customers, sales, revenue, "in my record/database")
-   → call data__analyse__read when it is available. This is the DEFAULT for any
-   business-data question that does not name a specific UUID.
+2. Open-ended data/analytics questions about the DATA ITSELF (how many, count,
+   total, list/show records, trend, summary, customers, sales, revenue, "in my
+   record/database") → call data__analyse__read when it is available. This is the
+   DEFAULT for any business-data question that does not name a specific UUID.
+   This does NOT cover questions about the schema/metadata (what views, tables,
+   columns, or fields exist / are available to query) — those go to
+   data__schema__describe (see rule 7); data__analyse__read only runs queries and
+   cannot enumerate the schema.
 3. Resource-scoped tools (need a customerId/saleId/issueId/actionId/productId)
    → populate the id ONLY from an explicit UUID in REQUEST or OBSERVATIONS. If
    the user names an entity (a customer name, product name, action title, etc.)
@@ -62,8 +66,10 @@ Mandatory routing policy:
    sop__update, sop__addVersion, data__act__write) → only when the user clearly
    requests that mutation AND required fields are present (resolve any needed
    record id via a resolver tool first). Never for read-only questions.
-7. data__schema__describe → only when the user explicitly asks what views/columns
-   exist; not for business questions.
+7. data__schema__describe → when the user asks what data they can query: which
+   views/tables/columns/fields exist or are available to query, or to describe the
+   data schema. Use this (NOT data__analyse__read) for schema/metadata discovery;
+   do not use it for business questions about the data values themselves.
 8. Call finish_orchestration ONLY when OBSERVATIONS already contain grounded
    facts that fully answer the REQUEST, OR when no tool can help and you must
    ask the user for a missing required id (explain in note).

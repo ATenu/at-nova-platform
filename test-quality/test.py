@@ -120,8 +120,11 @@ JUDGE_MODEL = env("LLM_MODEL", "gpt-4o-mini")
 
 # The orchestrator drives several LLM hops (reason/critique/compose) plus an A2A
 # analyst call; with the configured model this can take a few minutes, so allow
-# generous headroom before treating a run as timed out.
-RUN_POLL_TIMEOUT_S = 300
+# generous headroom before treating a run as timed out. Keycloak access tokens
+# are short-lived (~5 min) and the harness now re-mints them transparently
+# (see get_user_token / authed_request), so a long poll no longer expires its
+# own token mid-run.
+RUN_POLL_TIMEOUT_S = 420
 RUN_POLL_INTERVAL_S = 3
 TERMINAL_STATUSES = {"completed", "failed", "canceled", "cancelled", "expired", "error", "succeeded"}
 
@@ -404,15 +407,17 @@ SCENARIOS: list[Scenario] = [
         "sales-user has read-issues (read-only) but not read-data.",
     ),
 
-    # --- E. RBAC denial / least privilege ------------------------------------
+    # --- E. RBAC boundaries: least privilege, redirection & denial -----------
     Scenario(
         "T14", "compliance",
         "List all customer issues and their statuses.",
-        [], ["issues.list", "issues.get", "data.analyse.read", "issues.list.pendingForCustomer"],
-        "Declines or states it cannot access customer issues; no issue data is returned.",
-        "ops-compliance has NO read-issues, so issue capabilities are filtered out and "
-        "must not be invoked. (read-data would only expose curated analyst views, but "
-        "the request is specifically about the issues surface.)",
+        ["data.analyse.read"], ["issues.list", "issues.get", "issues.list.pendingForCustomer"],
+        "Reports the 3 issues with their statuses (completed, in_assistance, rejected) "
+        "via the curated read-only analyst views, exposing no customer PII.",
+        "ops-compliance lacks read-issues but HAS read-data, so — exactly like T05 — it "
+        "legitimately answers through the curated read-only analyst views "
+        "(data.analyse.read), never via the direct issue capabilities (issues.list/get/"
+        "list.pendingForCustomer), which require read-issues and must not be invoked.",
     ),
     Scenario(
         "T15", "crm",
@@ -425,11 +430,15 @@ SCENARIOS: list[Scenario] = [
         "T16", "salesman",
         "Please close the Philip Sanders weak-suction issue and mark its open actions "
         "as completed.",
-        [], ["issues.update", "actions.markCompleted", "actions.update"],
-        "Does NOT perform any write; explains it lacks permission to modify issues or "
-        "actions (it may read but not mutate them).",
-        "sales-user has read-issues/read-actions but NOT write-issues/write-actions, so "
-        "no write capability may execute.",
+        ["issues.list", "issues.get"], ["issues.update", "actions.markCompleted", "actions.update"],
+        "Performs NO write: the issue stays in_assistance and its actions are not marked "
+        "completed. Read-only lookups to inspect the issue are acceptable, but the answer "
+        "must NOT claim the close/completion succeeded (ideally noting it cannot make that "
+        "change).",
+        "sales-user has read-issues/read-actions (read-only) but NOT write-issues/"
+        "write-actions, so the write capabilities are filtered from its menu (Layer A) "
+        "and can never execute (Layer B). Using read-only lookups is within entitlement; "
+        "only the writes are forbidden, and no mutation may occur.",
     ),
 
     # --- F. Capability nuance & writes ---------------------------------------
@@ -613,6 +622,53 @@ def user_access_token(email: str) -> str:
     return payload["access_token"]
 
 
+# Per-user access-token cache. Keycloak access tokens are short-lived (~5 min),
+# but a single agent run can poll for several minutes, so we cache the minted
+# token per user and re-mint it proactively before it expires (and reactively on
+# a 401). This keeps the role-based access path identical while preventing the
+# harness from failing its own runs with an expired token.
+_TOKEN_CACHE: dict[str, tuple[str, float]] = {}
+# Re-mint well before Keycloak's ~300s access-token lifetime.
+TOKEN_REFRESH_AFTER_S = 200
+
+
+def get_user_token(email: str, *, force: bool = False) -> str:
+    cached = _TOKEN_CACHE.get(email)
+    if not force and cached and (time.time() - cached[1]) < TOKEN_REFRESH_AFTER_S:
+        return cached[0]
+    token = user_access_token(email)
+    _TOKEN_CACHE[email] = (token, time.time())
+    return token
+
+
+def authed_request(
+    method: str,
+    url: str,
+    email: str,
+    *,
+    json_body: Any = None,
+    extra_headers: Optional[dict[str, str]] = None,
+    timeout: int = 60,
+) -> Any:
+    """Make an authenticated request on behalf of ``email``.
+
+    Uses the cached (proactively refreshed) per-user token, and if the token has
+    nonetheless been rejected as invalid/expired (HTTP 401), force-re-mints it
+    once and retries the same request. Any extra headers (e.g. an
+    Idempotency-Key) are preserved across the retry so the call stays idempotent.
+    """
+    for attempt in range(2):
+        headers = _bearer(get_user_token(email, force=attempt == 1))
+        if extra_headers:
+            headers.update(extra_headers)
+        try:
+            return http_request(method, url, headers=headers, json_body=json_body, timeout=timeout)
+        except HttpError as exc:
+            if exc.status == 401 and attempt == 0:
+                continue  # token invalid/expired: force-refresh and retry once
+            raise
+
+
 def provision_login(self_check: bool = True) -> None:
     """Ensure the dedicated test client exists and every test user can log in via
     the password grant. Tokens themselves are minted fresh per scenario (Keycloak
@@ -647,33 +703,31 @@ def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def submit_chat(token: str, message: str) -> dict[str, Any]:
-    headers = _bearer(token)
-    headers["Idempotency-Key"] = str(uuid.uuid4())
-    return http_request(
-        "POST", f"{API_BASE}/a2a/chat",
-        headers=headers,
+def submit_chat(email: str, message: str) -> dict[str, Any]:
+    return authed_request(
+        "POST", f"{API_BASE}/a2a/chat", email,
         json_body={"message": message},
+        extra_headers={"Idempotency-Key": str(uuid.uuid4())},
     )
 
 
-def poll_run(token: str, run_id: str) -> dict[str, Any]:
+def poll_run(email: str, run_id: str) -> dict[str, Any]:
     deadline = time.time() + RUN_POLL_TIMEOUT_S
     last: dict[str, Any] = {}
     while time.time() < deadline:
-        last = http_request("GET", f"{API_BASE}/agent-runs/{run_id}", headers=_bearer(token))
+        last = authed_request("GET", f"{API_BASE}/agent-runs/{run_id}", email)
         if str(last.get("status")) in TERMINAL_STATUSES:
             return last
         time.sleep(RUN_POLL_INTERVAL_S)
     return last
 
 
-def fetch_trace(token: str, run_id: str) -> dict[str, Any]:
-    return http_request("GET", f"{API_BASE}/agent-runs/{run_id}/trace", headers=_bearer(token))
+def fetch_trace(email: str, run_id: str) -> dict[str, Any]:
+    return authed_request("GET", f"{API_BASE}/agent-runs/{run_id}/trace", email)
 
 
-def fetch_conversation(token: str, conversation_id: str) -> dict[str, Any]:
-    return http_request("GET", f"{API_BASE}/conversations/{conversation_id}", headers=_bearer(token))
+def fetch_conversation(email: str, conversation_id: str) -> dict[str, Any]:
+    return authed_request("GET", f"{API_BASE}/conversations/{conversation_id}", email)
 
 
 def extract_capabilities(events: list[dict[str, Any]]) -> tuple[list[str], list[str], list[str]]:
@@ -710,23 +764,26 @@ def run_scenario(scenario: Scenario, user: TestUser) -> RunResult:
     result = RunResult()
     started = time.time()
     try:
-        # Mint a fresh access token per scenario so it never expires mid-run.
-        token = user_access_token(user.email)
-        created = submit_chat(token, scenario.question)
+        # All calls below go through authed_request, which mints the per-user
+        # token, refreshes it proactively before the ~5 min Keycloak expiry, and
+        # re-mints + retries once on a 401 — so a multi-minute run never fails on
+        # its own expired token while still exercising the real RBAC path.
+        get_user_token(user.email)  # warm/refresh the cached token up front
+        created = submit_chat(user.email, scenario.question)
         result.run_id = created.get("runId", "")
         result.conversation_id = created.get("conversationId", "")
-        run = poll_run(token, result.run_id)
+        run = poll_run(user.email, result.run_id)
         result.status = str(run.get("status", "unknown"))
         response_message_id = run.get("responseMessageId")
 
-        trace = fetch_trace(token, result.run_id)
+        trace = fetch_trace(user.email, result.run_id)
         caps, agents, types = extract_capabilities(trace.get("events") or [])
         result.invoked_capabilities = caps
         result.invoked_agents = agents
         result.trace_event_types = types
 
         if result.conversation_id:
-            conv = fetch_conversation(token, result.conversation_id)
+            conv = fetch_conversation(user.email, result.conversation_id)
             result.response_text = assistant_response(conv, response_message_id)
     except HttpError as exc:
         result.error = f"HTTP {exc.status}: {exc.body[:300]}"
