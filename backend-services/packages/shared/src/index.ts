@@ -1,4 +1,6 @@
 export * from './rbac/permissions';
+export * from './rbac/capabilities';
+export * from './auth/service-token-client';
 export * from './errors/app-error';
 export * from './logger/logger';
 export * from './config/load-config';

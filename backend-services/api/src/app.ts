@@ -4,7 +4,7 @@ import helmet from 'helmet';
 import cors from 'cors';
 import pinoHttp from 'pino-http';
 import type { Logger, RedisConnection } from '@nova/shared';
-import { ForbiddenError } from '@nova/shared';
+import { ForbiddenError, ServiceTokenClient } from '@nova/shared';
 import type { DataSource } from 'typeorm';
 import type { ApiConfig } from './config';
 import { createRateLimiter } from './http/rate-limit';
@@ -40,8 +40,15 @@ import { KeycloakProvisioningService } from './modules/admin/keycloak-provisioni
 import { createAdminRouter } from './modules/admin/admin.routes';
 import { ConversationRepository } from './modules/chat/conversation.repository';
 import { ChatService } from './modules/chat/chat.service';
-import { LocalAgentGateway } from './modules/chat/agent-gateway';
-import { createA2aRouter, createConversationsRouter } from './modules/chat/chat.routes';
+import { createConversationsRouter } from './modules/chat/chat.routes';
+import { AgentRunRepository } from './modules/agent-runs/agent-run.repository';
+import { AgentRunService } from './modules/agent-runs/agent-run.service';
+import { OrchestratorClient } from './modules/agent-runs/orchestrator-client';
+import { createA2aChatRouter, createAgentRunRouter } from './modules/agent-runs/agent-run.routes';
+import { ToolGatewayService } from './modules/agent-runs/tool-gateway.service';
+import { createToolGatewayRouter } from './modules/agent-runs/tool-gateway.routes';
+import { ServiceTokenVerifier } from './auth/service-token-verifier';
+import { createServiceAuthenticate } from './auth/service-authenticate';
 
 export interface AppDependencies {
   readonly config: ApiConfig;
@@ -52,6 +59,11 @@ export interface AppDependencies {
    * in-memory rate-limit store that is not shared across replicas.
    */
   readonly cacheRedis?: RedisConnection | null;
+  /**
+   * Isolated orchestration-state DataSource (`postgres-agents`). `null` (or
+   * omitted) means the agent-runs surface is not mounted.
+   */
+  readonly agentsDataSource?: DataSource | null;
 }
 
 function buildCorsOptions(config: ApiConfig): cors.CorsOptions {
@@ -66,7 +78,8 @@ function buildCorsOptions(config: ApiConfig): cors.CorsOptions {
       callback(new ForbiddenError('Origin is not allowed by CORS policy.'));
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-    allowedHeaders: ['Authorization', 'Content-Type', 'X-Request-Id'],
+    // Idempotency-Key: agent run submission. Last-Event-ID: resumable SSE stream.
+    allowedHeaders: ['Authorization', 'Content-Type', 'X-Request-Id', 'Idempotency-Key', 'Last-Event-ID'],
     maxAge: 600,
   };
 }
@@ -77,7 +90,7 @@ function buildCorsOptions(config: ApiConfig): cors.CorsOptions {
  * pipeline, feature routers, and the single error handler.
  */
 export function createApp(deps: AppDependencies): Express {
-  const { config, logger, dataSource, cacheRedis = null } = deps;
+  const { config, logger, dataSource, cacheRedis = null, agentsDataSource = null } = deps;
   const app = express();
 
   app.disable('x-powered-by');
@@ -148,7 +161,7 @@ export function createApp(deps: AppDependencies): Express {
   const sopService = new SopService(sopRepository, userRepository);
   const adminUserService = new AdminUserService(userRepository, provisioning);
   const rbacService = new RbacService(dataSource);
-  const chatService = new ChatService(conversationRepository, userRepository, new LocalAgentGateway());
+  const chatService = new ChatService(conversationRepository, userRepository);
 
   app.use('/health', createHealthRouter({ dataSource, cacheRedis }));
   app.use('/api/v1/auth', createMeRouter({ authenticate, users: userRepository }));
@@ -160,7 +173,67 @@ export function createApp(deps: AppDependencies): Express {
   app.use('/api/v1/sops', createSopRouter({ authenticate, service: sopService }));
   app.use('/api/v1/admin', createAdminRouter({ authenticate, userService: adminUserService, rbacService }));
   app.use('/api/v1/conversations', createConversationsRouter({ authenticate, service: chatService }));
-  app.use('/api/v1/a2a', createA2aRouter({ authenticate, service: chatService }));
+
+  // Asynchronous agent orchestration (control plane). Mounted only when the
+  // isolated orchestration-state DB is configured. The orchestrator task gateway
+  // is optional: without it, runs are persisted as `queued` but not dispatched.
+  // The chat entrypoint (`/a2a/chat`) lives here too, since it creates runs.
+  if (agentsDataSource) {
+    const orchestratorClient =
+      config.orchestrator.baseUrl && config.keycloakAdmin
+        ? new OrchestratorClient(
+            { baseUrl: config.orchestrator.baseUrl },
+            new ServiceTokenClient({
+              tokenUrl: config.orchestrator.tokenUrl,
+              clientId: config.keycloakAdmin.clientId,
+              clientSecret: config.keycloakAdmin.clientSecret,
+            }),
+          )
+        : null;
+    const agentRunRepository = new AgentRunRepository(agentsDataSource);
+    const agentRunService = new AgentRunService(
+      agentRunRepository,
+      userRepository,
+      conversationRepository,
+      { runTtlSeconds: config.agents.runTtlSeconds },
+      logger,
+      orchestratorClient,
+    );
+    app.use('/api/v1/a2a', createA2aChatRouter({ authenticate, service: agentRunService }));
+    app.use('/api/v1/agent-runs', createAgentRunRouter({ authenticate, service: agentRunService }));
+    logger.info({ orchestratorDispatch: orchestratorClient !== null }, 'agent-runs surface mounted');
+
+    // Internal MCP tool gateway (execution plane -> control plane). The worker
+    // reaches it with an audience-restricted service token; authorization is
+    // re-enforced from the entitlement snapshot inside the service.
+    const toolGatewayService = new ToolGatewayService(
+      agentRunRepository,
+      conversationRepository,
+      {
+        customers: customerService,
+        sales: saleService,
+        issues: issueService,
+        actions: actionService,
+        sops: sopService,
+      },
+      logger,
+    );
+    const serviceAuthenticate = createServiceAuthenticate(
+      new ServiceTokenVerifier({
+        issuerUrl: config.auth.issuerUrl,
+        jwksUri: config.auth.jwksUri,
+        audience: [config.toolGateway.audience],
+        authorizedParties: [config.toolGateway.authorizedParty],
+      }),
+    );
+    app.use(
+      '/internal/agent-runs',
+      createToolGatewayRouter({ serviceAuthenticate, service: toolGatewayService }),
+    );
+    logger.info('internal MCP tool gateway mounted');
+  } else {
+    logger.info('agent-runs surface not mounted (AGENTS_DATABASE_URL not configured)');
+  }
 
   app.use(notFoundHandler());
   app.use(createErrorHandler());

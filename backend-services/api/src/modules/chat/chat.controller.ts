@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 import { UnauthenticatedError } from '@nova/shared';
 import type { ChatService } from './chat.service';
-import type { AgentChatBody, ConversationIdParams } from './chat.schema';
+import type { ConversationIdParams } from './chat.schema';
 
 export class ChatController {
   constructor(private readonly service: ChatService) {}
@@ -24,10 +24,5 @@ export class ChatController {
 
   createConversation = async (req: Request, res: Response): Promise<void> => {
     res.status(201).json(await this.service.createConversation(this.requireAuth(req)));
-  };
-
-  sendAgentMessage = async (req: Request, res: Response): Promise<void> => {
-    const body = req.body as AgentChatBody;
-    res.json(await this.service.sendAgentMessage(body, this.requireAuth(req)));
   };
 }

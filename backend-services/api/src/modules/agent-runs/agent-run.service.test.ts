@@ -1,0 +1,170 @@
+import { NotFoundError, permissionsForRoles, type Logger, type Role } from '@nova/shared';
+import type { AgentRun } from '@nova/database';
+import type { AuthContext } from '../../auth/auth-context';
+import { AgentRunService } from './agent-run.service';
+import type { AgentRunRepository } from './agent-run.repository';
+import type { UserRepository } from '../users/user.repository';
+import type { ConversationRepository } from '../chat/conversation.repository';
+import type { EnqueueRunPayload, OrchestratorClient } from './orchestrator-client';
+
+function authFor(subject: string, roles: Role[]): AuthContext {
+  return {
+    subject,
+    issuer: 'https://keycloak.local/realms/nova',
+    audience: ['nova-api'],
+    email: `${subject}@test.com`,
+    username: subject,
+    givenName: 'Test',
+    familyName: 'User',
+    roles,
+    permissions: permissionsForRoles(roles),
+    scopes: [],
+  };
+}
+
+function fakeRun(overrides: Partial<AgentRun> = {}): AgentRun {
+  return {
+    id: 'run-1',
+    ownerSubject: 'kc-1',
+    ownerUserId: 'user-1',
+    orgId: '00000000-0000-0000-0000-000000000000',
+    conversationId: 'conv-1',
+    status: 'queued',
+    promptRef: 'nova-msg://conv-1/msg-1',
+    responseRef: null,
+    callbackAuthConfigId: null,
+    entitlementSnapshotId: 'ent-1',
+    idempotencyKey: 'idem-1',
+    cancelRequested: false,
+    lastHeartbeatAt: null,
+    expiresAt: new Date('2026-05-31T02:00:00.000Z'),
+    createdAt: new Date('2026-05-31T00:00:00.000Z'),
+    updatedAt: new Date('2026-05-31T00:00:00.000Z'),
+    entitlement: undefined as never,
+    ...overrides,
+  } as AgentRun;
+}
+
+const logger = { warn: jest.fn(), info: jest.fn() } as unknown as Logger;
+
+function buildService(parts: {
+  runs?: Partial<AgentRunRepository>;
+  orchestrator?: OrchestratorClient | null;
+}) {
+  const users = {
+    findByKeycloakId: jest.fn(async (sub: string) => ({ user: { id: 'user-1', keycloakId: sub }, roles: ['sales-user'] })),
+  } as unknown as UserRepository;
+  const conversations = {
+    create: jest.fn(async () => ({ id: 'conv-1', userId: 'user-1' })),
+    findForUser: jest.fn(async (id: string) => ({ id, userId: 'user-1' })),
+    addMessage: jest.fn(async () => ({ id: 'msg-1' })),
+  } as unknown as ConversationRepository;
+  const runs = {
+    findByOwnerAndIdempotencyKey: jest.fn(async () => null),
+    createRun: jest.fn(async () => fakeRun()),
+    findByIdForOwner: jest.fn(async (runId: string, ownerSubject: string) =>
+      ownerSubject === 'kc-1' ? fakeRun({ id: runId }) : null,
+    ),
+    requestCancel: jest.fn(async (run: AgentRun) => ({ ...run, cancelRequested: true })),
+    listUserEventsAfter: jest.fn(async () => []),
+    ...parts.runs,
+  } as unknown as AgentRunRepository;
+
+  const service = new AgentRunService(
+    runs,
+    users,
+    conversations,
+    { runTtlSeconds: 7200 },
+    logger,
+    parts.orchestrator ?? null,
+  );
+  return { service, runs, conversations, users };
+}
+
+describe('AgentRunService.createRun', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('captures an entitlement snapshot and enqueues by ID only', async () => {
+    const enqueueRun = jest.fn(async (_payload: EnqueueRunPayload) => undefined);
+    const orchestrator = { enqueueRun } as unknown as OrchestratorClient;
+    const { service } = buildService({ orchestrator });
+
+    const dto = await service.createRun({
+      body: { message: 'add a sale' },
+      auth: authFor('kc-1', ['sales-user']),
+      idempotencyKey: 'idem-1',
+      requestId: 'req-1',
+    });
+
+    expect(dto.runId).toBe('run-1');
+    expect(dto.status).toBe('queued');
+    expect(enqueueRun).toHaveBeenCalledTimes(1);
+    const payload = enqueueRun.mock.calls[0]![0];
+    expect(payload.actingSubject).toBe('kc-1');
+    expect(payload.entitlementSnapshotHash).toMatch(/^sha256:/);
+    // The prompt is never put on the broker payload.
+    expect(JSON.stringify(payload)).not.toContain('add a sale');
+  });
+
+  it('is idempotent: a replayed key returns the existing run without re-enqueue', async () => {
+    const enqueueRun = jest.fn(async (_payload: EnqueueRunPayload) => undefined);
+    const orchestrator = { enqueueRun } as unknown as OrchestratorClient;
+    const { service } = buildService({
+      runs: { findByOwnerAndIdempotencyKey: jest.fn(async () => fakeRun({ id: 'existing' })) },
+      orchestrator,
+    });
+
+    const dto = await service.createRun({
+      body: { message: 'hi' },
+      auth: authFor('kc-1', ['sales-user']),
+      idempotencyKey: 'idem-1',
+      requestId: 'req-1',
+    });
+
+    expect(dto.runId).toBe('existing');
+    expect(enqueueRun).not.toHaveBeenCalled();
+  });
+
+  it('still persists the run when no orchestrator is configured', async () => {
+    const { service, runs } = buildService({ orchestrator: null });
+    const dto = await service.createRun({
+      body: { message: 'hi' },
+      auth: authFor('kc-1', ['sales-user']),
+      idempotencyKey: 'idem-1',
+      requestId: 'req-1',
+    });
+    expect(dto.status).toBe('queued');
+    expect(runs.createRun).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AgentRunService ownership (default deny)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('returns an owned run', async () => {
+    const { service } = buildService({});
+    const dto = await service.getRun('run-9', authFor('kc-1', ['sales-user']));
+    expect(dto.runId).toBe('run-9');
+  });
+
+  it('rejects cross-owner reads with 404 (no existence disclosure)', async () => {
+    const { service } = buildService({});
+    await expect(service.getRun('run-9', authFor('kc-OTHER', ['sales-user']))).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+  });
+
+  it('rejects cross-owner cancel', async () => {
+    const { service } = buildService({});
+    await expect(
+      service.cancelRun('run-9', authFor('kc-OTHER', ['sales-user'])),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('rejects cross-owner event reads', async () => {
+    const { service } = buildService({});
+    await expect(
+      service.getEventBatch('run-9', 0, authFor('kc-OTHER', ['sales-user'])),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+});

@@ -45,4 +45,12 @@ export class ConversationRepository {
     const message = this.messages.create(data);
     return this.messages.save(message);
   }
+
+  /** Load a single message scoped to its conversation (no cross-conversation read). */
+  async findMessageInConversation(
+    conversationId: string,
+    messageId: string,
+  ): Promise<Message | null> {
+    return this.messages.findOne({ where: { id: messageId, conversationId } });
+  }
 }

@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import type { Server } from 'node:http';
-import { AppDataSource } from '@nova/database';
+import type { DataSource } from 'typeorm';
+import { AppDataSource, createAgentsDataSource } from '@nova/database';
 import { createLogger, createRedisConnection, type RedisConnection } from '@nova/shared';
 import { createApp } from './app';
 import { loadApiConfig } from './config';
@@ -18,6 +19,15 @@ async function bootstrap(): Promise<void> {
   const dataSource = await AppDataSource.initialize();
   logger.info('database connection established');
 
+  // Isolated orchestration-state DB. Initialized only when configured so the
+  // API still boots without the orchestration plane.
+  const agentsDataSource: DataSource | null = config.agents.databaseUrl
+    ? await createAgentsDataSource().initialize()
+    : null;
+  if (agentsDataSource) {
+    logger.info('agents database connection established');
+  }
+
   const cacheRedis: RedisConnection | null = config.redis.cacheUrl
     ? createRedisConnection({
         url: config.redis.cacheUrl,
@@ -27,7 +37,7 @@ async function bootstrap(): Promise<void> {
       })
     : null;
 
-  const app = createApp({ config, logger, dataSource, cacheRedis });
+  const app = createApp({ config, logger, dataSource, cacheRedis, agentsDataSource });
   const server: Server = app.listen(config.port, () => {
     logger.info({ port: config.port }, 'nova-api listening');
   });
@@ -53,6 +63,9 @@ async function bootstrap(): Promise<void> {
         try {
           if (cacheRedis) {
             await cacheRedis.quit();
+          }
+          if (agentsDataSource) {
+            await agentsDataSource.destroy();
           }
           await dataSource.destroy();
           clearTimeout(forceExit);

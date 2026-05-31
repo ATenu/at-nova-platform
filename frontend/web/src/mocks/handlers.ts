@@ -4,6 +4,8 @@ import { NOVA_ROLES, ROLE_PERMISSIONS, type NovaRole } from '@/auth/permissions'
 import type {
   ActionCommentDto,
   AdminUserDto,
+  AgentRunDto,
+  AgentRunEventDto,
   ConversationDto,
   IssueActionStatus,
   MessageDto,
@@ -26,6 +28,9 @@ import {
 
 const API = env.apiBaseUrl.replace(/\/$/, '');
 const ts = () => new Date().toISOString();
+
+/** In-memory agent runs created via the chat entrypoint (mock async pipeline). */
+const agentRunsStore = new Map<string, { run: AgentRunDto; events: AgentRunEventDto[] }>();
 
 /** Resolve the seeded user email encoded in the mock bearer token. */
 function emailFromRequest(request: Request): string | null {
@@ -453,7 +458,13 @@ export const handlers = [
     return HttpResponse.json(conversation, { status: 201 });
   }),
 
+  // Chat entrypoint: creates an agent run (mirrors `POST /a2a/chat`). The mock
+  // persists the user + assistant messages immediately and records a short event
+  // script the SSE stream below replays, so the async run UX works offline.
   http.post<PathParams, DefaultBodyType>(`${API}/a2a/chat`, async ({ request }) => {
+    if (!emailFromRequest(request)) {
+      return unauthorized();
+    }
     const email = emailFromRequest(request);
     const user = email ? findUserByEmail(email) : undefined;
     const body = (await request.json()) as { conversationId?: string; message: string };
@@ -491,10 +502,94 @@ export const handlers = [
     conversation.messages = [...(conversation.messages ?? []), userMessage, reply.message];
     conversation.updatedAt = ts();
 
-    return HttpResponse.json({
-      conversation,
-      assistantMessage: reply.message,
-      toolLinks: reply.toolLinks,
+    const runId = nextId('run');
+    const run: AgentRunDto = {
+      runId,
+      status: 'running',
+      conversationId: conversation.id,
+      cancelRequested: false,
+      finalResponse: reply.message.text,
+      eventsUrl: `${API}/agent-runs/${runId}/events`,
+      createdAt: ts(),
+      updatedAt: ts(),
+      expiresAt: null,
+    };
+    const events: AgentRunEventDto[] = [
+      { id: nextId('evt'), sequence: 1, type: 'run.started', payload: {}, createdAt: ts() },
+      {
+        id: nextId('evt'),
+        sequence: 2,
+        type: 'tool.call.completed',
+        payload: { summary: reply.message.text },
+        createdAt: ts(),
+      },
+      { id: nextId('evt'), sequence: 3, type: 'run.completed', payload: {}, createdAt: ts() },
+    ];
+    agentRunsStore.set(runId, { run, events });
+
+    return HttpResponse.json(run, { status: 202 });
+  }),
+
+  http.get(`${API}/agent-runs/:runId`, ({ params, request }) => {
+    if (!emailFromRequest(request)) {
+      return unauthorized();
+    }
+    const entry = agentRunsStore.get(String(params.runId));
+    return entry ? HttpResponse.json(entry.run) : notFound('Agent run not found.');
+  }),
+
+  http.post(`${API}/agent-runs/:runId/cancel`, ({ params, request }) => {
+    if (!emailFromRequest(request)) {
+      return unauthorized();
+    }
+    const entry = agentRunsStore.get(String(params.runId));
+    if (!entry) {
+      return notFound('Agent run not found.');
+    }
+    entry.run = { ...entry.run, status: 'canceled', cancelRequested: true, updatedAt: ts() };
+    return HttpResponse.json(entry.run);
+  }),
+
+  // SSE progress stream. Replays the recorded events (after the requested
+  // sequence) with small delays, then closes once the terminal event is sent.
+  http.get(`${API}/agent-runs/:runId/events`, ({ params, request }) => {
+    if (!emailFromRequest(request)) {
+      return unauthorized();
+    }
+    const entry = agentRunsStore.get(String(params.runId));
+    if (!entry) {
+      return notFound('Agent run not found.');
+    }
+    const after = Number(new URL(request.url).searchParams.get('afterSequence') ?? '0') || 0;
+    const pending = entry.events.filter((event) => event.sequence > after);
+    const encoder = new TextEncoder();
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        let index = 0;
+        const pushNext = () => {
+          const event = pending[index++];
+          if (!event) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(
+            encoder.encode(
+              `id: ${event.sequence}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+            ),
+          );
+          setTimeout(pushNext, 350);
+        };
+        pushNext();
+      },
+    });
+
+    return new HttpResponse(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+      },
     });
   }),
 ];

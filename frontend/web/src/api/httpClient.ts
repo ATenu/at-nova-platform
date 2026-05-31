@@ -16,6 +16,8 @@ export interface RequestOptions {
   readonly query?: QueryParams;
   readonly body?: unknown;
   readonly signal?: AbortSignal;
+  /** Extra request headers (e.g. `Idempotency-Key`). Reserved headers win. */
+  readonly headers?: Readonly<Record<string, string>>;
   /** Skip attaching the bearer token (e.g. genuinely public endpoints). */
   readonly anonymous?: boolean;
 }
@@ -35,6 +37,12 @@ function buildUrl(path: string, query?: QueryParams): string {
 
 async function request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
   const headers = new Headers({ Accept: 'application/json' });
+
+  if (options.headers) {
+    for (const [key, value] of Object.entries(options.headers)) {
+      headers.set(key, value);
+    }
+  }
 
   if (!options.anonymous) {
     const token = await getAuthToken();

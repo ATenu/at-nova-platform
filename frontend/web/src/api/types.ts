@@ -218,9 +218,56 @@ export interface ConversationDto {
 
 export type EntityLinkType = 'customer' | 'sale' | 'issue' | 'action' | 'sop';
 
-export interface AgentChatRequest {
-  readonly conversationId?: string;
+export interface AgentToolLink {
+  readonly label: string;
+  readonly href: string;
+  readonly type: EntityLinkType | 'external';
+}
+
+/**
+ * Asynchronous agent-run lifecycle (Celery execution plane). The control plane
+ * accepts a run, streams `user`-visibility progress events over SSE, and exposes
+ * cancellation. `internal`/`security` events never reach the client.
+ */
+export type AgentRunStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting_approval'
+  | 'completed'
+  | 'failed'
+  | 'canceled'
+  | 'expired';
+
+export const TERMINAL_AGENT_RUN_STATUSES: readonly AgentRunStatus[] = [
+  'completed',
+  'failed',
+  'canceled',
+  'expired',
+];
+
+export interface AgentRunDto {
+  readonly runId: string;
+  readonly status: AgentRunStatus;
+  readonly conversationId: string | null;
+  readonly cancelRequested: boolean;
+  readonly finalResponse: string | null;
+  readonly eventsUrl: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly expiresAt: string | null;
+}
+
+export interface AgentRunEventDto {
+  readonly id: string;
+  readonly sequence: number;
+  readonly type: string;
+  readonly payload: Record<string, unknown>;
+  readonly createdAt: string;
+}
+
+export interface CreateAgentRunRequest {
   readonly message: string;
+  readonly conversationId?: string;
   readonly context?: {
     readonly currentRoute?: string;
     readonly selectedEntity?: {
@@ -228,16 +275,4 @@ export interface AgentChatRequest {
       readonly id: string;
     };
   };
-}
-
-export interface AgentToolLink {
-  readonly label: string;
-  readonly href: string;
-  readonly type: EntityLinkType | 'external';
-}
-
-export interface AgentChatResponse {
-  readonly conversation: ConversationDto;
-  readonly assistantMessage: MessageDto;
-  readonly toolLinks?: readonly AgentToolLink[];
 }

@@ -2,7 +2,7 @@ import RedisMock from 'ioredis-mock';
 import { createCacheClient } from './cache';
 import type { RedisConnection } from './redis-client';
 
-function connectionFor(client: RedisMock): RedisConnection {
+function connectionFor(client: InstanceType<typeof RedisMock>): RedisConnection {
   return {
     client: client as unknown as RedisConnection['client'],
     namespace: 'test',

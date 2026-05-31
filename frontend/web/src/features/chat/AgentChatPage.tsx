@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { listConversations, getConversation, sendAgentMessage } from '@/api/chat.api';
-import type { AgentChatResponse, MessageDto } from '@/api/types';
+import { listConversations, getConversation } from '@/api/chat.api';
+import { createAgentRun, newIdempotencyKey } from '@/api/agentRuns.api';
+import type { AgentRunEventDto, MessageDto } from '@/api/types';
 import { queryKeys } from '@/api/queryClient';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -12,10 +13,36 @@ import { toUserMessage } from '@/lib/errors';
 import { formatRelative } from '@/lib/dates';
 import { ChatMessage } from './ChatMessage';
 import { ChatComposer } from './ChatComposer';
+import { useAgentRunEvents } from './useAgentRunEvents';
 
 interface PendingTurn {
   readonly text: string;
   readonly status: 'sending' | 'error';
+}
+
+/** Render a `user`-visibility run event as a short progress line (or skip it). */
+function describeEvent(event: AgentRunEventDto): string | null {
+  const capability = typeof event.payload.capability === 'string' ? event.payload.capability : '';
+  switch (event.type) {
+    case 'run.started':
+      return 'Starting…';
+    case 'planner.started':
+      return 'Planning your request…';
+    case 'tool.call.started':
+      return capability ? `Running ${capability}…` : 'Running a step…';
+    case 'tool.call.completed':
+      return typeof event.payload.summary === 'string' && event.payload.summary
+        ? event.payload.summary
+        : `Finished ${capability}.`;
+    case 'tool.call.failed':
+      return `A step did not complete${capability ? ` (${capability})` : ''}.`;
+    case 'run.failed':
+      return 'The run failed.';
+    case 'run.canceled':
+      return 'Run canceled.';
+    default:
+      return null;
+  }
 }
 
 export function AgentChatPage() {
@@ -23,7 +50,7 @@ export function AgentChatPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const activeId = searchParams.get('c');
   const [pending, setPending] = useState<PendingTurn | null>(null);
-  const [lastLinks, setLastLinks] = useState<AgentChatResponse['toolLinks']>();
+  const [runId, setRunId] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
 
   const conversations = useQuery({ queryKey: queryKeys.conversations, queryFn: listConversations });
@@ -33,34 +60,54 @@ export function AgentChatPage() {
     enabled: Boolean(activeId),
   });
 
+  const run = useAgentRunEvents(runId, { enabled: runId !== null });
+
   const setActive = (id: string | null) => {
-    setLastLinks(undefined);
     setPending(null);
+    setRunId(null);
     setSearchParams(id ? { c: id } : {}, { replace: true });
   };
 
   const mutation = useMutation({
     mutationFn: (message: string) =>
-      sendAgentMessage({
-        message,
-        ...(activeId ? { conversationId: activeId } : {}),
-        context: { currentRoute: '/app/chat' },
-      }),
-    onSuccess: (response) => {
+      createAgentRun(
+        {
+          message,
+          ...(activeId ? { conversationId: activeId } : {}),
+          context: { currentRoute: '/app/chat' },
+        },
+        newIdempotencyKey(),
+      ),
+    onSuccess: (created) => {
       setPending(null);
-      setLastLinks(response.toolLinks);
+      setRunId(created.runId);
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.conversation(response.conversation.id),
-      });
-      if (response.conversation.id !== activeId) {
-        setSearchParams({ c: response.conversation.id }, { replace: true });
+      if (created.conversationId) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.conversation(created.conversationId),
+        });
+        if (created.conversationId !== activeId) {
+          setSearchParams({ c: created.conversationId }, { replace: true });
+        }
       }
     },
     onError: () => {
       setPending((current) => (current ? { ...current, status: 'error' } : current));
     },
   });
+
+  // When the run reaches a terminal event, refresh the conversation so the
+  // assistant message the worker persisted (via the tool gateway) appears. This
+  // effect performs query invalidation only (no setState); `isRunActive` already
+  // hides the live progress bubble once the run completes.
+  useEffect(() => {
+    if (runId && run.isComplete) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
+      if (activeId) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.conversation(activeId) });
+      }
+    }
+  }, [runId, run.isComplete, activeId, queryClient]);
 
   const send = (message: string) => {
     setPending({ text: message, status: 'sending' });
@@ -79,12 +126,25 @@ export function AgentChatPage() {
     [conversation.data],
   );
 
+  const progressLines = useMemo<readonly string[]>(() => {
+    const lines: string[] = [];
+    for (const event of run.events) {
+      const line = describeEvent(event);
+      if (line) {
+        lines.push(line);
+      }
+    }
+    return lines;
+  }, [run.events]);
+
+  const isRunActive = runId !== null && !run.isComplete;
+
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages, pending]);
+  }, [messages, pending, progressLines]);
 
   const visibleMessages = messages.filter((message) => message.role !== 'system');
-  const hasContent = visibleMessages.length > 0 || pending !== null;
+  const hasContent = visibleMessages.length > 0 || pending !== null || isRunActive;
 
   return (
     <div className="chat">
@@ -138,14 +198,10 @@ export function AgentChatPage() {
             </div>
           ) : (
             <>
-              {visibleMessages.map((message, index) => (
-                <ChatMessage
-                  key={message.id}
-                  message={message}
-                  toolLinks={index === visibleMessages.length - 1 ? lastLinks : undefined}
-                />
+              {visibleMessages.map((message) => (
+                <ChatMessage key={message.id} message={message} />
               ))}
-              {pending ? (
+              {pending && pending.status === 'error' ? (
                 <>
                   <div className="chat-msg user">
                     <span className="chat-role-ico" aria-hidden>
@@ -153,33 +209,47 @@ export function AgentChatPage() {
                     </span>
                     <div className="chat-bubble">{pending.text}</div>
                   </div>
-                  {pending.status === 'sending' ? (
-                    <div className="chat-msg assistant">
-                      <span className="chat-role-ico" aria-hidden>
-                        <Icon name="sparkles" size={16} />
-                      </span>
+                  <div className="row" style={{ gap: 10 }}>
+                    <span className="text-sm" style={{ color: 'var(--danger)' }}>
+                      Message failed to send.
+                    </span>
+                    <Button size="sm" onClick={retry}>
+                      <Icon name="refresh" size={14} /> Retry
+                    </Button>
+                  </div>
+                </>
+              ) : null}
+              {isRunActive ? (
+                <div className="chat-msg assistant">
+                  <span className="chat-role-ico" aria-hidden>
+                    <Icon name="sparkles" size={16} />
+                  </span>
+                  <div className="stack" style={{ gap: 6, minWidth: 0 }}>
+                    {progressLines.length > 0 ? (
+                      progressLines.map((line, index) => (
+                        <div key={`${index}-${line}`} className="chat-bubble">
+                          {line}
+                        </div>
+                      ))
+                    ) : (
                       <div className="chat-bubble">
-                        <span className="typing" aria-label="Nova is typing">
+                        <span className="typing" aria-label="Nova is working">
                           <span /> <span /> <span />
                         </span>
                       </div>
-                    </div>
-                  ) : (
-                    <div className="row" style={{ gap: 10 }}>
+                    )}
+                    {run.error ? (
                       <span className="text-sm" style={{ color: 'var(--danger)' }}>
-                        Message failed to send.
+                        {run.error}
                       </span>
-                      <Button size="sm" onClick={retry}>
-                        <Icon name="refresh" size={14} /> Retry
-                      </Button>
-                    </div>
-                  )}
-                </>
+                    ) : null}
+                  </div>
+                </div>
               ) : null}
             </>
           )}
         </div>
-        <ChatComposer disabled={pending?.status === 'sending'} onSend={send} />
+        <ChatComposer disabled={isRunActive || pending?.status === 'sending'} onSend={send} />
       </Card>
     </div>
   );

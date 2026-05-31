@@ -1,0 +1,89 @@
+"""Typed configuration for the orchestration plane, loaded from the environment.
+
+No module reads ``os.environ`` directly; the process fails fast on missing
+required configuration. Secrets (client secrets, broker passwords) are never
+logged. Importable without third-party dependencies so the authz tests stay
+lightweight.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+
+class ConfigError(RuntimeError):
+    """Raised when required configuration is missing or invalid."""
+
+
+def _require(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise ConfigError(f"Missing required environment variable: {name}")
+    return value
+
+
+def _optional(name: str, default: str) -> str:
+    return os.environ.get(name) or default
+
+
+def _int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:  # noqa: TRY003
+        raise ConfigError(f"Environment variable {name} must be an integer") from exc
+
+
+@dataclass(frozen=True)
+class OrchestratorConfig:
+    role: str
+    broker_url: str
+    result_backend: str
+    agents_database_url: str
+    keycloak_issuer_url: str
+    keycloak_jwks_uri: str
+    keycloak_token_url: str
+    orchestrator_audience: str
+    worker_client_id: str
+    worker_client_secret: str
+    run_soft_time_limit_s: int
+    run_time_limit_s: int
+    # Internal MCP tool gateway (Node control plane) the worker calls back into.
+    nova_api_internal_url: str
+    max_run_steps: int
+
+    @property
+    def is_worker(self) -> bool:
+        return self.role == "worker"
+
+
+def load_config() -> OrchestratorConfig:
+    issuer = _require("KEYCLOAK_ISSUER_URL")
+    jwks = _optional(
+        "KEYCLOAK_JWKS_URI",
+        f"{issuer.rstrip('/')}/protocol/openid-connect/certs",
+    )
+    token_url = _optional(
+        "KEYCLOAK_TOKEN_URL",
+        f"{issuer.rstrip('/')}/protocol/openid-connect/token",
+    )
+    return OrchestratorConfig(
+        role=_optional("ORCHESTRATOR_ROLE", "worker"),
+        broker_url=_require("CELERY_BROKER_URL"),
+        result_backend=_require("CELERY_RESULT_BACKEND"),
+        agents_database_url=_require("AGENTS_DATABASE_URL"),
+        keycloak_issuer_url=issuer,
+        keycloak_jwks_uri=jwks,
+        keycloak_token_url=token_url,
+        orchestrator_audience=_optional("ORCHESTRATOR_AUDIENCE", "nova-orchestrator"),
+        worker_client_id=_optional("WORKER_CLIENT_ID", "nova-celery-worker"),
+        # Secret is only required when the worker actually mints per-hop tokens.
+        worker_client_secret=_optional("WORKER_CLIENT_SECRET", ""),
+        run_soft_time_limit_s=_int("RUN_SOFT_TIME_LIMIT_S", 6900),
+        run_time_limit_s=_int("RUN_TIME_LIMIT_S", 7200),
+        nova_api_internal_url=_optional("NOVA_API_INTERNAL_URL", "http://nova-api:3000"),
+        max_run_steps=_int("MAX_RUN_STEPS", 8),
+    )

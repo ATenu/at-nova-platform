@@ -10,20 +10,29 @@ import {
 describe('RBAC definitions', () => {
   it('exposes the expected counts', () => {
     expect(ROLES).toHaveLength(5);
-    expect(PERMISSIONS).toHaveLength(15);
+    expect(PERMISSIONS).toHaveLength(18);
   });
 
-  it('maps roles to permissions with the documented totals (39 grants)', () => {
+  it('maps roles to permissions with the documented totals (54 grants)', () => {
     const totalGrants = Object.values(ROLE_PERMISSIONS).reduce(
       (sum, perms) => sum + perms.length,
       0,
     );
-    expect(totalGrants).toBe(39);
-    expect(ROLE_PERMISSIONS['admin']).toHaveLength(15);
-    expect(ROLE_PERMISSIONS['support-operations-user']).toHaveLength(8);
-    expect(ROLE_PERMISSIONS['sales-user']).toHaveLength(7);
-    expect(ROLE_PERMISSIONS['customer-support']).toHaveLength(7);
-    expect(ROLE_PERMISSIONS['ops-compliance']).toHaveLength(2);
+    // 39 domain grants + 3 agent-run lifecycle grants per role (5 roles).
+    expect(totalGrants).toBe(54);
+    expect(ROLE_PERMISSIONS['admin']).toHaveLength(18);
+    expect(ROLE_PERMISSIONS['support-operations-user']).toHaveLength(11);
+    expect(ROLE_PERMISSIONS['sales-user']).toHaveLength(10);
+    expect(ROLE_PERMISSIONS['customer-support']).toHaveLength(10);
+    expect(ROLE_PERMISSIONS['ops-compliance']).toHaveLength(5);
+  });
+
+  it('grants the agent-run lifecycle permissions to every assistant-using role', () => {
+    for (const role of ROLES) {
+      expect(rolesGrantPermission([role], 'create-agent-run')).toBe(true);
+      expect(rolesGrantPermission([role], 'read-agent-run')).toBe(true);
+      expect(rolesGrantPermission([role], 'cancel-agent-run')).toBe(true);
+    }
   });
 
   it('only grants permissions that are defined', () => {

@@ -35,6 +35,13 @@ services:
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
       KC_HTTP_ENABLED: 'true'
       KC_HEALTH_ENABLED: 'true'
+      # Pin the public issuer so every token (browser login AND internal
+      # client_credentials from api/worker) carries iss=http://localhost:8080/...
+      # matching KEYCLOAK_ISSUER_URL across the stack.
+      KC_HOSTNAME: localhost
+      KC_HOSTNAME_PORT: '8080'
+      KC_HOSTNAME_STRICT: 'false'
+      KC_HOSTNAME_STRICT_HTTPS: 'false'
     ports:
       - '8080:8080'
     healthcheck:
@@ -101,6 +108,53 @@ services:
       timeout: 5s
       retries: 20
 
+  # Dedicated Celery broker + result backend for the orchestration plane.
+  # `noeviction` protects queued/running task state from being dropped under
+  # memory pressure (broker messages must never be silently dropped). Never
+  # published to the host; use rediss:// (TLS) in any non-local environment.
+  redis-orchestrator:
+    image: redis:7-alpine
+    container_name: nova-redis-orchestrator
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_ORCHESTRATOR_PASSWORD:-nova_redis_orchestrator_password}
+      - --appendonly
+      - 'yes'
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - noeviction
+    environment:
+      REDISCLI_AUTH: ${REDIS_ORCHESTRATOR_PASSWORD:-nova_redis_orchestrator_password}
+    volumes:
+      - nova-redis-orchestrator-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # Dedicated orchestration-state database, isolated from the business `nova`
+  # DB. The execution plane never connects to the business DB directly; all
+  # business reads/writes go through the API or MCP tools (which enforce RBAC).
+  postgres-agents:
+    image: postgres:16-alpine
+    container_name: nova-postgres-agents
+    environment:
+      POSTGRES_DB: ${POSTGRES_AGENTS_DB:-nova_agents}
+      POSTGRES_USER: ${POSTGRES_AGENTS_USER:-nova_agents}
+      POSTGRES_PASSWORD: ${POSTGRES_AGENTS_PASSWORD:-nova_agents_password}
+    volumes:
+      - nova-postgres-agents-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - 'CMD-SHELL'
+        - 'pg_isready -U ${POSTGRES_AGENTS_USER:-nova_agents} -d ${POSTGRES_AGENTS_DB:-nova_agents}'
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   # One-shot: run migrations then seed, against a healthy database.
   db-init:
     build:
@@ -119,6 +173,25 @@ services:
     command: ['npm', 'run', 'db:init:prod', '-w', '@nova/database']
     restart: 'no'
 
+  # One-shot: apply the orchestration-plane schema to the isolated agents DB.
+  # The Node control plane owns this schema (it writes runs + entitlement
+  # snapshots); the Python execution plane reads/updates the same tables.
+  db-init-agents:
+    build:
+      context: ./backend-services
+      dockerfile: Dockerfile
+    container_name: nova-db-init-agents
+    depends_on:
+      postgres-agents:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      AGENTS_DATABASE_URL: postgres://${POSTGRES_AGENTS_USER:-nova_agents}:${POSTGRES_AGENTS_PASSWORD:-nova_agents_password}@postgres-agents:5432/${POSTGRES_AGENTS_DB:-nova_agents}
+      AGENTS_DB_SSL: 'false'
+      DB_LOGGING: ${DB_LOGGING:-false}
+    command: ['npm', 'run', 'db:init:agents:prod', '-w', '@nova/database']
+    restart: 'no'
+
   api:
     build:
       context: ./backend-services
@@ -126,6 +199,8 @@ services:
     container_name: nova-api
     depends_on:
       db-init:
+        condition: service_completed_successfully
+      db-init-agents:
         condition: service_completed_successfully
       keycloak:
         condition: service_healthy
@@ -137,6 +212,15 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-nova}:${POSTGRES_PASSWORD:-nova_password}@postgres:5432/${POSTGRES_DB:-nova}
       DB_SSL: 'false'
       DB_LOGGING: ${DB_LOGGING:-false}
+      # Isolated orchestration-state DB (control plane writes runs + snapshots).
+      AGENTS_DATABASE_URL: postgres://${POSTGRES_AGENTS_USER:-nova_agents}:${POSTGRES_AGENTS_PASSWORD:-nova_agents_password}@postgres-agents:5432/${POSTGRES_AGENTS_DB:-nova_agents}
+      AGENTS_DB_SSL: 'false'
+      # Orchestrator task gateway (the API enqueues by ID only, never the broker).
+      ORCHESTRATOR_BASE_URL: ${ORCHESTRATOR_BASE_URL:-http://orchestrator:8001}
+      ORCHESTRATOR_AUDIENCE: ${ORCHESTRATOR_AUDIENCE:-nova-orchestrator}
+      # How long an async run may keep acting for the user, independent of the
+      # user's short-lived access token (bounds the entitlement snapshot).
+      AGENT_RUN_TTL_SECONDS: ${AGENT_RUN_TTL_SECONDS:-7200}
       API_PORT: '3000'
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3000}
       # Shared rate-limit/cache store. Local uses redis:// over the internal
@@ -168,6 +252,96 @@ services:
       retries: 5
     command: ['node', 'api/dist/main.js']
 
+  # Orchestrator task gateway (nova-orchestrator). FastAPI service colocated
+  # with Celery so the Node API never needs broker credentials. Validates the
+  # inbound nova-api service token (aud: nova-orchestrator) and enqueues the
+  # Celery task by ID only.
+  orchestrator:
+    build:
+      context: ./services/orchestrator
+      dockerfile: Dockerfile
+    container_name: nova-orchestrator
+    depends_on:
+      db-init-agents:
+        condition: service_completed_successfully
+      redis-orchestrator:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    environment:
+      ORCHESTRATOR_ROLE: gateway
+      ORCHESTRATOR_PORT: '8001'
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://:nova_redis_orchestrator_password@redis-orchestrator:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://:nova_redis_orchestrator_password@redis-orchestrator:6379/1}
+      AGENTS_DATABASE_URL: postgresql+psycopg://${POSTGRES_AGENTS_USER:-nova_agents}:${POSTGRES_AGENTS_PASSWORD:-nova_agents_password}@postgres-agents:5432/${POSTGRES_AGENTS_DB:-nova_agents}
+      KEYCLOAK_ISSUER_URL: ${KEYCLOAK_ISSUER_URL:-http://localhost:8080/realms/nova}
+      KEYCLOAK_JWKS_URI: ${KEYCLOAK_JWKS_URI:-http://keycloak:8080/realms/nova/protocol/openid-connect/certs}
+      ORCHESTRATOR_AUDIENCE: ${ORCHESTRATOR_AUDIENCE:-nova-orchestrator}
+    ports:
+      - '8001:8001'
+
+  # Celery orchestration worker (nova-celery-worker). Loads the run + entitlement
+  # snapshot from postgres-agents, runs the code policy gate before every hop,
+  # and mints audience-restricted per-hop service tokens. Never connects to the
+  # business `nova` DB.
+  celery-worker:
+    build:
+      context: ./services/orchestrator
+      dockerfile: Dockerfile
+    container_name: nova-celery-worker
+    depends_on:
+      db-init-agents:
+        condition: service_completed_successfully
+      redis-orchestrator:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    environment:
+      ORCHESTRATOR_ROLE: worker
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://:nova_redis_orchestrator_password@redis-orchestrator:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://:nova_redis_orchestrator_password@redis-orchestrator:6379/1}
+      AGENTS_DATABASE_URL: postgresql+psycopg://${POSTGRES_AGENTS_USER:-nova_agents}:${POSTGRES_AGENTS_PASSWORD:-nova_agents_password}@postgres-agents:5432/${POSTGRES_AGENTS_DB:-nova_agents}
+      KEYCLOAK_ISSUER_URL: ${KEYCLOAK_ISSUER_URL:-http://localhost:8080/realms/nova}
+      KEYCLOAK_JWKS_URI: ${KEYCLOAK_JWKS_URI:-http://keycloak:8080/realms/nova/protocol/openid-connect/certs}
+      KEYCLOAK_TOKEN_URL: ${KEYCLOAK_TOKEN_URL:-http://keycloak:8080/realms/nova/protocol/openid-connect/token}
+      WORKER_CLIENT_ID: ${WORKER_CLIENT_ID:-nova-celery-worker}
+      WORKER_CLIENT_SECRET: ${WORKER_CLIENT_SECRET:-nova-celery-worker-dev-secret}
+      # The worker calls the Node-hosted MCP tool gateway with an
+      # audience-restricted (nova-mcp-*) service token. It never touches the
+      # business `nova` DB; all business reads/writes go through this gateway,
+      # which re-enforces the entitlement snapshot.
+      NOVA_API_INTERNAL_URL: ${NOVA_API_INTERNAL_URL:-http://api:3000}
+      MAX_RUN_STEPS: ${MAX_RUN_STEPS:-8}
+    command: ['celery', '-A', 'nova_orchestrator.celery_app', 'worker', '--loglevel=info', '--queues=orchestrator.longrunning', '--concurrency=2']
+
+  # Webhook dispatcher (transactional outbox poller). Runs in its own worker pool
+  # on the `webhooks` queue with embedded beat (-B) so a slow receiver never
+  # blocks orchestration. Signs each delivery (HMAC) and retries with backoff
+  # until success or dead-letter. Never connects to the business `nova` DB.
+  celery-webhook:
+    build:
+      context: ./services/orchestrator
+      dockerfile: Dockerfile
+    container_name: nova-celery-webhook
+    depends_on:
+      db-init-agents:
+        condition: service_completed_successfully
+      redis-orchestrator:
+        condition: service_healthy
+    environment:
+      ORCHESTRATOR_ROLE: worker
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://:nova_redis_orchestrator_password@redis-orchestrator:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://:nova_redis_orchestrator_password@redis-orchestrator:6379/1}
+      AGENTS_DATABASE_URL: postgresql+psycopg://${POSTGRES_AGENTS_USER:-nova_agents}:${POSTGRES_AGENTS_PASSWORD:-nova_agents_password}@postgres-agents:5432/${POSTGRES_AGENTS_DB:-nova_agents}
+      KEYCLOAK_ISSUER_URL: ${KEYCLOAK_ISSUER_URL:-http://localhost:8080/realms/nova}
+      # Dev-only signing secret. In production resolve per-owner HMAC secrets from
+      # a managed secret store via the `*_secret_ref` columns (never stored here).
+      WEBHOOK_HMAC_SECRET: ${WEBHOOK_HMAC_SECRET:-}
+    command: ['celery', '-A', 'nova_orchestrator.celery_app', 'worker', '--beat', '--loglevel=info', '--queues=webhooks', '--concurrency=1']
+
   # Production-style static build of the React app served by nginx. Published on
   # host port 5173 to match the Keycloak realm's redirect URIs and web origins.
   # VITE_* values are inlined at build time; the browser reaches the API and
@@ -194,3 +368,5 @@ volumes:
   nova-postgres-data:
   nova-redis-cache-data:
   nova-redis-agent-data:
+  nova-redis-orchestrator-data:
+  nova-postgres-agents-data:

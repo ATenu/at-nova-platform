@@ -24,6 +24,15 @@ export const PERMISSIONS = [
   'write-sop',
   'read-users',
   'write-users',
+  // Agent-run lifecycle plumbing (NOT domain actions). These gate the
+  // `/api/v1/agent-runs` surface only: opening a run, reading/streaming an
+  // owned run, and cancelling an owned run. Granular "can this user do X"
+  // decisions are made by binding each agent skill / MCP tool to the SAME
+  // domain permission its equivalent REST operation already requires (see
+  // `capabilities.ts`), never by these coarse lifecycle gates.
+  'create-agent-run',
+  'read-agent-run',
+  'cancel-agent-run',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -51,6 +60,9 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
     'write-sales',
     'read-actions',
     'read-sop',
+    'create-agent-run',
+    'read-agent-run',
+    'cancel-agent-run',
   ],
   'support-operations-user': [
     'read-customers',
@@ -61,6 +73,9 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
     'read-actions',
     'write-actions',
     'read-sop',
+    'create-agent-run',
+    'read-agent-run',
+    'cancel-agent-run',
   ],
   admin: [
     'read-customers',
@@ -78,8 +93,11 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
     'write-sop',
     'read-users',
     'write-users',
+    'create-agent-run',
+    'read-agent-run',
+    'cancel-agent-run',
   ],
-  'ops-compliance': ['read-sop', 'write-sop'],
+  'ops-compliance': ['read-sop', 'write-sop', 'create-agent-run', 'read-agent-run', 'cancel-agent-run'],
   'customer-support': [
     'read-customers',
     'create-issues',
@@ -88,6 +106,9 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
     'read-sales',
     'read-actions',
     'write-actions',
+    'create-agent-run',
+    'read-agent-run',
+    'cancel-agent-run',
   ],
 } as const;
 

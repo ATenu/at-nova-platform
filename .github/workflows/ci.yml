@@ -1,0 +1,80 @@
+name: CI
+
+# Security gates per Celery worker plan section 23. Never weaken lint/type/test
+# settings to make code pass.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (lint, typecheck, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend-services
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci
+      - run: npm run build -w @nova/shared
+      - run: npm run build -w @nova/database
+      - run: npm run lint --workspaces --if-present
+      - run: npm run typecheck --workspaces --if-present
+      - run: npm test --workspaces --if-present
+
+  frontend:
+    name: Frontend (lint, typecheck, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test --if-present
+
+  orchestrator:
+    name: Orchestrator (ruff, mypy, pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/orchestrator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+      - run: python -m ruff check src tests
+      - run: python -m mypy src
+      - run: python -m pytest -q
+
+  authz-parity:
+    name: AuthZ parity (TS -> Python, no drift)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      # Regenerate the canonical RBAC JSON from the TypeScript source of truth,
+      # then fail if the committed Python registry has drifted from it.
+      - run: npm ci
+        working-directory: backend-services
+      - run: npm run build -w @nova/shared
+        working-directory: backend-services
+      - run: npm run rbac:export -w @nova/shared
+        working-directory: backend-services
+      - run: python services/orchestrator/scripts/generate_nova_authz.py --check

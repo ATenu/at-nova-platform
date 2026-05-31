@@ -30,6 +30,25 @@ const apiEnvSchema = z
 
     DB_SSL: booleanFromEnv.default('false'),
 
+    // Isolated orchestration-state DB (control plane writes runs + snapshots).
+    // Optional: when absent, the agent-runs surface is not mounted.
+    AGENTS_DATABASE_URL: z.string().url().optional(),
+    AGENTS_DB_SSL: booleanFromEnv.default('false'),
+
+    // Orchestrator task gateway. The API enqueues by ID only with an
+    // audience-restricted (nova-orchestrator) service token. Optional: when
+    // absent, submitted runs are persisted as `queued` but not dispatched.
+    ORCHESTRATOR_BASE_URL: z.string().url().optional(),
+    ORCHESTRATOR_AUDIENCE: z.string().min(1).default('nova-orchestrator'),
+    AGENT_RUN_TTL_SECONDS: z.coerce.number().int().positive().default(7200),
+
+    // Internal MCP tool gateway: the worker reaches it with an
+    // audience-restricted (nova-mcp-*) service token whose authorized party
+    // (azp) must be the worker client. Authorization is re-enforced from the
+    // entitlement snapshot, never from these claims.
+    INTERNAL_TOOL_GATEWAY_AUDIENCE: z.string().min(1).default('nova-mcp-sales'),
+    INTERNAL_TOOL_GATEWAY_AZP: z.string().min(1).default('nova-celery-worker'),
+
     // Shared cache / rate-limit Redis (frontend+backend instance). Optional in
     // dev/test (falls back to an in-memory limiter), required in production so
     // limits are correct across replicas. Use `rediss://` (TLS) for any managed
@@ -85,6 +104,27 @@ export interface ApiConfig {
     readonly clientId: string;
     readonly clientSecret: string;
   } | null;
+  /**
+   * Orchestration plane. `agents.databaseUrl` is `null` when the isolated
+   * orchestration DB is not configured (the agent-runs API is then not mounted).
+   * `orchestrator.baseUrl` is `null` when no task gateway is configured (runs are
+   * persisted as `queued` but not dispatched from the API).
+   */
+  readonly agents: {
+    readonly databaseUrl: string | null;
+    readonly dbSsl: boolean;
+    readonly runTtlSeconds: number;
+  };
+  readonly orchestrator: {
+    readonly baseUrl: string | null;
+    readonly audience: string;
+    readonly tokenUrl: string;
+  };
+  /** Internal MCP tool gateway: who may call it (audience + authorized party). */
+  readonly toolGateway: {
+    readonly audience: string;
+    readonly authorizedParty: string;
+  };
 }
 
 function deriveJwksUri(issuerUrl: string, explicit: string | undefined): string {
@@ -106,6 +146,8 @@ export function loadApiConfig(): ApiConfig {
   // Reach Keycloak's Admin REST API on the same origin the JWKS is fetched from
   // (internally reachable in Docker), unless an explicit base URL is provided.
   const adminBaseUrl = env.KEYCLOAK_ADMIN_BASE_URL ?? originOf(jwksUri);
+  // The service-token endpoint is reached internally (same origin as the JWKS).
+  const tokenUrl = `${originOf(jwksUri)}/realms/${encodeURIComponent(env.KEYCLOAK_REALM)}/protocol/openid-connect/token`;
   return {
     environment: env.NODE_ENV,
     logLevel: env.LOG_LEVEL,
@@ -130,5 +172,19 @@ export function loadApiConfig(): ApiConfig {
           clientSecret: env.KEYCLOAK_API_CLIENT_SECRET,
         }
       : null,
+    agents: {
+      databaseUrl: env.AGENTS_DATABASE_URL ?? null,
+      dbSsl: env.AGENTS_DB_SSL,
+      runTtlSeconds: env.AGENT_RUN_TTL_SECONDS,
+    },
+    orchestrator: {
+      baseUrl: env.ORCHESTRATOR_BASE_URL ?? null,
+      audience: env.ORCHESTRATOR_AUDIENCE,
+      tokenUrl,
+    },
+    toolGateway: {
+      audience: env.INTERNAL_TOOL_GATEWAY_AUDIENCE,
+      authorizedParty: env.INTERNAL_TOOL_GATEWAY_AZP,
+    },
   };
 }

@@ -17,14 +17,20 @@
     "test": "jest --passWithNoTests",
     "typeorm": "typeorm-ts-node-commonjs -d src/data-source.ts",
     "typeorm:prod": "typeorm -d dist/data-source.js",
+    "typeorm:agents": "typeorm-ts-node-commonjs -d src/agents/agents-cli-data-source.ts",
+    "typeorm:agents:prod": "typeorm -d dist/agents/agents-cli-data-source.js",
     "migration:run": "npm run typeorm -- migration:run",
     "migration:run:prod": "npm run typeorm:prod -- migration:run",
+    "migration:run:agents": "npm run typeorm:agents -- migration:run",
+    "migration:run:agents:prod": "npm run typeorm:agents:prod -- migration:run",
     "migration:revert": "npm run typeorm -- migration:revert",
     "migration:show": "npm run typeorm -- migration:show",
     "seed": "ts-node src/seeds/seed.ts",
     "seed:prod": "node dist/seeds/seed.js",
     "db:init": "npm run migration:run && npm run seed",
-    "db:init:prod": "npm run migration:run:prod && npm run seed:prod"
+    "db:init:prod": "npm run migration:run:prod && npm run seed:prod",
+    "db:init:agents": "npm run migration:run:agents",
+    "db:init:agents:prod": "npm run migration:run:agents:prod"
   },
   "dependencies": {
     "@nova/shared": "*",
