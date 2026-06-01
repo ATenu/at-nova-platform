@@ -203,6 +203,10 @@ This diagram shows **every component and how each interacts with the others**:
 trust boundaries, transports (HTTP, SSE, A2A, MCP, Celery, SQL), and the
 control-plane / execution-plane split.
 
+**Visual overview** — [Solution design diagram (PNG)](img-at/solution_design_userfriendly.png)
+
+![Nova Platform — Solution Design (visual overview)](img-at/solution_design_userfriendly.png)
+
 ```mermaid
 flowchart TB
     subgraph Browser["Browser"]
@@ -346,6 +350,10 @@ fits best — and notably it does **not** use WebSockets:
 This is the heart of the system: what happens from the moment a user asks a
 question, through orchestration, agent selection, MCP tool use, and the push of
 progress back to the browser (SSE) and external systems (webhooks).
+
+**Visual overview** — [Agentic flow diagram (PNG)](img-at/agentic_flow_userfriendly.png)
+
+![Nova Platform — Agentic Flow (visual overview)](img-at/agentic_flow_userfriendly.png)
 
 ```mermaid
 sequenceDiagram
