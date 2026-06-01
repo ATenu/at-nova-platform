@@ -10,6 +10,7 @@ import type { ResourceServer, VerifiedCaller } from './auth/resource-server';
 import type { SnapshotClient } from './auth/snapshot-client';
 import type { ReadOnlyDataSource } from './data/readonly-datasource';
 import { registerTools } from './tools/register-tools';
+import { handleCatalog } from './routes/catalog';
 import { toSafeError } from './errors';
 
 const SERVER_NAME = 'nova-db-mcp-server';
@@ -57,6 +58,15 @@ export function createMcpHttpApp(deps: McpHttpDeps): Express {
       .healthCheck()
       .then(() => res.status(200).json({ status: 'ready' }))
       .catch(() => res.status(503).json({ status: 'unavailable' }));
+  });
+
+  // Snapshot-free capability/schema discovery for trusted internal services
+  // (the SQL analyst agent builds its Agent Card from this at startup, before
+  // any user run exists). Authenticated + `azp`-pinned like every other route,
+  // but it returns ONLY the curated, allowlist-derived view metadata — never DB
+  // rows and never PII values — so it needs no per-run entitlement snapshot.
+  app.get('/catalog', (req, res) => {
+    void handleCatalog(req, res, deps.resourceServer);
   });
 
   app.post('/mcp', (req, res) => {

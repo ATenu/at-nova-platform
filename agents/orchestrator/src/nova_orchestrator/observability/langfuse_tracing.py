@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -184,6 +185,49 @@ def current_observation_id() -> str | None:
         return None
 
 
+def _safe_exit(observation: Any, *exc_info: Any) -> None:
+    """Close a native observation, never letting a tracing error escape the run."""
+    try:
+        observation.__exit__(*exc_info)
+    except Exception:  # noqa: BLE001 - tracing teardown must never break a run
+        logger.warning("langfuse observation teardown failed; continuing", exc_info=False)
+
+
+@contextmanager
+def _observation(**kwargs: Any) -> Iterator[Any | None]:
+    """Enter a native Langfuse observation with fail-soft tracing semantics.
+
+    Tracing *setup/teardown* failures degrade to a no-op so a broken, disabled,
+    or unreachable Langfuse never breaks a run (rules 010/040). Exceptions raised
+    by the wrapped body are deliberately NOT swallowed: they are recorded on the
+    span (via ``__exit__``) and re-raised so the caller's own error handling runs.
+
+    Swallowing a body exception here and then yielding again — as the previous
+    implementation did — re-entered the generator after ``throw()`` and raised
+    ``RuntimeError: generator didn't stop after throw()``, which crashed the
+    entire orchestration run on ANY tool/agent failure (e.g. a rejected tool
+    input) instead of letting the graph mark the step failed and respond.
+    """
+    client = get_tracer()
+    if client is None:
+        yield None
+        return
+    try:
+        observation = client.start_as_current_observation(**kwargs)
+        span = observation.__enter__()
+    except Exception:  # noqa: BLE001 - tracing setup must never break a run
+        logger.warning("langfuse observation setup failed; continuing untraced", exc_info=False)
+        yield None
+        return
+    try:
+        yield span
+    except BaseException:
+        _safe_exit(observation, *sys.exc_info())
+        raise
+    else:
+        _safe_exit(observation, None, None, None)
+
+
 @contextmanager
 def run_trace(
     *,
@@ -194,9 +238,11 @@ def run_trace(
 ) -> Iterator[Any | None]:
     """Open the per-run root span (one trace per run, seeded from ``run_id``).
 
-    Yields the native Langfuse client (or ``None`` when disabled). All child
+    Yields the native Langfuse span (or ``None`` when disabled). All child
     observations created within this block — LangGraph node spans and LLM
-    generations from the CallbackHandler, plus tool spans — nest under it.
+    generations from the CallbackHandler, plus tool spans — nest under it. A
+    tracing failure degrades to a no-op; exceptions from the wrapped run
+    propagate to the caller unchanged.
     """
     client = get_tracer()
     if client is None:
@@ -207,10 +253,8 @@ def run_trace(
     # span id for trace-id inheritance (its value is irrelevant).
     parent_span_id = (run_id.replace("-", "")[:16] or "0").ljust(16, "0")
     trace_context = {"trace_id": trace_id, "parent_span_id": parent_span_id}
-    try:
-        with client.start_as_current_observation(
-            as_type="span", name=name, trace_context=trace_context
-        ) as span:
+    with _observation(as_type="span", name=name, trace_context=trace_context) as span:
+        if span is not None:
             try:
                 attrs: dict[str, Any] = {"name": name}
                 if session_id:
@@ -220,25 +264,17 @@ def run_trace(
                 client.update_current_trace(**attrs)
             except Exception:  # noqa: BLE001
                 pass
-            yield span
-    except Exception:  # noqa: BLE001 - a tracing failure must never break a run
-        logger.warning("langfuse run_trace failed; continuing untraced", exc_info=False)
-        yield None
+        yield span
 
 
 @contextmanager
 def tool_span(name: str, **metadata: Any) -> Iterator[None]:
-    """Native span around a single tool/MCP/agent invocation (safe metadata only)."""
-    client = get_tracer()
-    if client is None:
-        yield None
-        return
-    try:
-        with client.start_as_current_observation(
-            as_type="span", name=name, metadata=metadata or None
-        ):
-            yield None
-    except Exception:  # noqa: BLE001
+    """Native span around a single tool/MCP/agent invocation (safe metadata only).
+
+    Fail-soft on tracing; the wrapped call's own exceptions propagate so the
+    step-level error handling (mark failed, emit event, audit) still runs.
+    """
+    with _observation(as_type="span", name=name, metadata=metadata or None):
         yield None
 
 

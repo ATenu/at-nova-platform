@@ -22,12 +22,28 @@ from .. import prompts
 from .state import QueryAttempt, SchemaView, WriteOutcome
 
 
-class QueryDecision(BaseModel):
-    """The planner's next-step decision: run one SELECT, or finish."""
+class ReadStep(BaseModel):
+    """The read planner's next step in the bounded ReAct loop.
 
-    action: Literal["query", "finish"]
+    The agent owns ALL concrete read selection: each turn it picks ONE of two
+    tool families (or finishes):
+      - ``"sql"``: run one free-form read-only SELECT (``sql``/``params``) over
+        the curated ``mcp_read`` views (only offered when SQL is available, i.e.
+        the caller holds ``read-data``);
+      - ``"capability"``: invoke ONE entitled structured read capability
+        (``capability_id`` from the authorized closed set, with ``input`` built
+        from the goal/observations — e.g. resolve a name via ``customers.search``
+        then read with the returned id);
+      - ``"finish"``: enough has been gathered (or nothing applies).
+    Selecting an action is a request, not authorization: Layer B re-gates every
+    concrete capability and the DB MCP server re-validates every SELECT.
+    """
+
+    action: Literal["sql", "capability", "finish"]
     sql: str = ""
     params: list[str] = Field(default_factory=list)
+    capability_id: str = ""
+    input: dict[str, Any] = Field(default_factory=dict)
     rationale: str = ""
 
 
@@ -55,14 +71,16 @@ _TModel = TypeVar("_TModel", bound=BaseModel)
 class Reasoner(Protocol):
     """Async LLM judgment surface used by the graph nodes."""
 
-    async def propose_query(
+    async def plan_read_step(
         self,
         *,
         goal: str,
         schema: Sequence[SchemaView],
+        authorized_reads: Sequence[str],
         history: Sequence[QueryAttempt],
+        sql_enabled: bool,
         conversation_history: str = "",
-    ) -> QueryDecision: ...
+    ) -> ReadStep: ...
 
     async def critique(
         self, *, goal: str, history: Sequence[QueryAttempt]
@@ -132,21 +150,25 @@ class OpenAIReasoner:
         content = message.content
         return content if isinstance(content, str) else str(content)
 
-    async def propose_query(
+    async def plan_read_step(
         self,
         *,
         goal: str,
         schema: Sequence[SchemaView],
+        authorized_reads: Sequence[str],
         history: Sequence[QueryAttempt],
+        sql_enabled: bool,
         conversation_history: str = "",
-    ) -> QueryDecision:
+    ) -> ReadStep:
         return await self._structured(
-            QueryDecision,
-            prompts.PROPOSE_QUERY_SYSTEM,
-            prompts.propose_query_user(
+            ReadStep,
+            prompts.PLAN_READ_SYSTEM,
+            prompts.plan_read_user(
                 goal=goal,
                 schema=schema,
+                authorized_reads=authorized_reads,
                 history=history,
+                sql_enabled=sql_enabled,
                 conversation_history=conversation_history,
             ),
         )

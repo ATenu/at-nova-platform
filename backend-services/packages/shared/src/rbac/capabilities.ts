@@ -38,6 +38,15 @@ export interface CapabilityDescriptor {
   readonly risk: CapabilityRisk;
   /** true => record/field-level check is enforced at the data-owning tool. */
   readonly resourceScoped: boolean;
+  /**
+   * true => the capability is agent-internal: it is NOT surfaced on the
+   * orchestrator's LLM menu and is selected/executed only inside an A2A agent
+   * (re-gated per call, Layer B). The orchestrator is a pure delegator and only
+   * ever offers the non-delegated umbrella skills (`data.analyse.read`,
+   * `data.act.write`). Absent => false (orchestrator-visible). This is a
+   * routing/exposure flag only; authorization is still per `requiredPermissions`.
+   */
+  readonly delegated?: boolean;
 }
 
 /**
@@ -53,6 +62,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['read-sales', 'read-customers'],
     risk: 'low',
     resourceScoped: true,
+    delegated: true,
   },
   {
     // Aggregates the line items of a customer's sales into the distinct products
@@ -64,6 +74,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['read-sales', 'read-customers'],
     risk: 'low',
     resourceScoped: true,
+    delegated: true,
   },
   {
     id: 'sales.create',
@@ -72,6 +83,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['write-sales'],
     risk: 'low',
     resourceScoped: false,
+    delegated: true,
   },
   {
     id: 'issues.list.pendingForCustomer',
@@ -80,6 +92,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['read-issues', 'read-customers'],
     risk: 'low',
     resourceScoped: true,
+    delegated: true,
   },
   {
     id: 'actions.next',
@@ -88,6 +101,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['read-actions'],
     risk: 'low',
     resourceScoped: false,
+    delegated: true,
   },
   {
     id: 'actions.markCompleted',
@@ -96,6 +110,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['write-actions'],
     risk: 'low',
     resourceScoped: true,
+    delegated: true,
   },
   {
     id: 'issues.create',
@@ -104,6 +119,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['create-issues'],
     risk: 'low',
     resourceScoped: false,
+    delegated: true,
   },
   {
     id: 'sop.read',
@@ -112,6 +128,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['read-sop'],
     risk: 'low',
     resourceScoped: false,
+    delegated: true,
   },
   // --- Conversational resolver + detail reads --------------------------------
   // These let the orchestrator resolve a human reference (name/email/title) to
@@ -127,6 +144,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['read-customers'],
     risk: 'low',
     resourceScoped: false,
+    delegated: true,
   },
   {
     id: 'customers.get',
@@ -135,6 +153,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['read-customers'],
     risk: 'low',
     resourceScoped: true,
+    delegated: true,
   },
   {
     id: 'products.search',
@@ -143,6 +162,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['read-sales'],
     risk: 'low',
     resourceScoped: false,
+    delegated: true,
   },
   {
     id: 'products.get',
@@ -151,6 +171,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['read-sales'],
     risk: 'low',
     resourceScoped: true,
+    delegated: true,
   },
   {
     id: 'sales.list',
@@ -159,6 +180,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['read-sales'],
     risk: 'low',
     resourceScoped: false,
+    delegated: true,
   },
   {
     id: 'sales.get',
@@ -167,6 +189,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['read-sales'],
     risk: 'low',
     resourceScoped: true,
+    delegated: true,
   },
   {
     id: 'issues.list',
@@ -175,6 +198,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['read-issues'],
     risk: 'low',
     resourceScoped: false,
+    delegated: true,
   },
   {
     id: 'issues.get',
@@ -183,6 +207,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['read-issues'],
     risk: 'low',
     resourceScoped: true,
+    delegated: true,
   },
   {
     id: 'actions.list',
@@ -191,6 +216,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['read-actions'],
     risk: 'low',
     resourceScoped: false,
+    delegated: true,
   },
   {
     id: 'actions.get',
@@ -199,6 +225,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['read-actions'],
     risk: 'low',
     resourceScoped: true,
+    delegated: true,
   },
   // --- Domain writes (mirror the permission of the equivalent REST mutation) --
   // RBAC-gated, low risk like the existing writes: a write runs only if the
@@ -210,6 +237,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['write-actions'],
     risk: 'low',
     resourceScoped: true,
+    delegated: true,
   },
   {
     id: 'actions.update',
@@ -218,6 +246,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['write-actions'],
     risk: 'low',
     resourceScoped: true,
+    delegated: true,
   },
   {
     id: 'issues.update',
@@ -226,6 +255,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['write-issues'],
     risk: 'low',
     resourceScoped: true,
+    delegated: true,
   },
   {
     id: 'sop.create',
@@ -234,6 +264,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['write-sop'],
     risk: 'low',
     resourceScoped: false,
+    delegated: true,
   },
   {
     id: 'sop.update',
@@ -242,6 +273,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['write-sop'],
     risk: 'low',
     resourceScoped: true,
+    delegated: true,
   },
   {
     id: 'sop.addVersion',
@@ -250,6 +282,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     requiredPermissions: ['write-sop'],
     risk: 'low',
     resourceScoped: true,
+    delegated: true,
   },
   // --- Free-query data layer (DB MCP server + `at-sql-analyser`) -------------
   // All gated by the single coarse `read-data` permission (decision D1); the
@@ -271,31 +304,43 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     risk: 'low',
     resourceScoped: true,
   },
+  // --- Umbrella delegation skills (the ONLY caps the orchestrator surfaces) ---
+  // `data.analyse.read` and `data.act.write` are broad delegation ENTRY POINTS,
+  // not the authorization boundary. The orchestrator is a pure delegator: it
+  // hands a GOAL to `at-sql-analyser`, which then selects and chains the
+  // concrete `delegated` capabilities above (and the free-form SQL `mcp-tool`s),
+  // re-gating EACH one per its own `requiredPermissions` (Layer B) and having
+  // the Node gateway / MCP server re-check it. Because they are mere entry
+  // points, they are gated only on the universal `create-agent-run` permission
+  // (every agent-using role holds it); they grant NO data access by themselves.
+  // The agent only exposes the free-form SQL sub-tools when the caller actually
+  // holds `data.query.select`/`data.schema.describe` (i.e. `read-data`).
   {
     id: 'data.analyse.read',
     kind: 'agent-skill',
     mode: 'read',
-    requiredPermissions: ['read-data'],
+    requiredPermissions: ['create-agent-run'],
     risk: 'low',
     resourceScoped: true,
+    delegated: false,
   },
   // `data.act.write` is a DISPATCH skill: it may only invoke already-cataloged
   // write capabilities (e.g. `sales.create`), each independently gated on its
   // own domain permission AND the high-risk approval gate, so the agent can
-  // never mint new write authority. It is gated on `read-data` (the data-layer
-  // entitlement that exposes the SQL analyst at all) rather than on a write
-  // permission — and is marked `risk: 'high'`, so dispatching it additionally
-  // requires a recorded human approval. This intentionally keeps the catalog
-  // invariant that every capability declares at least one required permission
-  // (default deny; the plan's "no standalone permission" is realized as "no
-  // standalone *write* permission").
+  // never mint new write authority. As a broad delegation entry point it is
+  // gated only on the universal `create-agent-run` permission (NOT on any write
+  // permission) — and is marked `risk: 'high'`, so dispatching it additionally
+  // requires a recorded human approval. This keeps the catalog invariant that
+  // every capability declares at least one required permission (default deny;
+  // "no standalone permission" is realized as "no standalone *write* permission").
   {
     id: 'data.act.write',
     kind: 'agent-skill',
     mode: 'write',
-    requiredPermissions: ['read-data'],
+    requiredPermissions: ['create-agent-run'],
     risk: 'high',
     resourceScoped: true,
+    delegated: false,
   },
 ] as const;
 

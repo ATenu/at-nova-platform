@@ -30,6 +30,7 @@ class CapabilityDescriptor:
     required_permissions: tuple[str, ...]
     risk: str
     resource_scoped: bool
+    delegated: bool
 
 
 CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
@@ -40,6 +41,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("read-sales", "read-customers",),
         risk="low",
         resource_scoped=True,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="sales.products.forCustomer",
@@ -48,6 +50,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("read-sales", "read-customers",),
         risk="low",
         resource_scoped=True,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="sales.create",
@@ -56,6 +59,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("write-sales",),
         risk="low",
         resource_scoped=False,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="issues.list.pendingForCustomer",
@@ -64,6 +68,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("read-issues", "read-customers",),
         risk="low",
         resource_scoped=True,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="actions.next",
@@ -72,6 +77,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("read-actions",),
         risk="low",
         resource_scoped=False,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="actions.markCompleted",
@@ -80,6 +86,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("write-actions",),
         risk="low",
         resource_scoped=True,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="issues.create",
@@ -88,6 +95,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("create-issues",),
         risk="low",
         resource_scoped=False,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="sop.read",
@@ -96,6 +104,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("read-sop",),
         risk="low",
         resource_scoped=False,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="customers.search",
@@ -104,6 +113,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("read-customers",),
         risk="low",
         resource_scoped=False,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="customers.get",
@@ -112,6 +122,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("read-customers",),
         risk="low",
         resource_scoped=True,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="products.search",
@@ -120,6 +131,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("read-sales",),
         risk="low",
         resource_scoped=False,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="products.get",
@@ -128,6 +140,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("read-sales",),
         risk="low",
         resource_scoped=True,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="sales.list",
@@ -136,6 +149,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("read-sales",),
         risk="low",
         resource_scoped=False,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="sales.get",
@@ -144,6 +158,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("read-sales",),
         risk="low",
         resource_scoped=True,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="issues.list",
@@ -152,6 +167,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("read-issues",),
         risk="low",
         resource_scoped=False,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="issues.get",
@@ -160,6 +176,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("read-issues",),
         risk="low",
         resource_scoped=True,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="actions.list",
@@ -168,6 +185,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("read-actions",),
         risk="low",
         resource_scoped=False,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="actions.get",
@@ -176,6 +194,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("read-actions",),
         risk="low",
         resource_scoped=True,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="actions.addComment",
@@ -184,6 +203,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("write-actions",),
         risk="low",
         resource_scoped=True,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="actions.update",
@@ -192,6 +212,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("write-actions",),
         risk="low",
         resource_scoped=True,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="issues.update",
@@ -200,6 +221,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("write-issues",),
         risk="low",
         resource_scoped=True,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="sop.create",
@@ -208,6 +230,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("write-sop",),
         risk="low",
         resource_scoped=False,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="sop.update",
@@ -216,6 +239,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("write-sop",),
         risk="low",
         resource_scoped=True,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="sop.addVersion",
@@ -224,6 +248,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("write-sop",),
         risk="low",
         resource_scoped=True,
+        delegated=True,
     ),
     CapabilityDescriptor(
         id="data.schema.describe",
@@ -232,6 +257,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("read-data",),
         risk="low",
         resource_scoped=False,
+        delegated=False,
     ),
     CapabilityDescriptor(
         id="data.query.select",
@@ -240,21 +266,24 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         required_permissions=("read-data",),
         risk="low",
         resource_scoped=True,
+        delegated=False,
     ),
     CapabilityDescriptor(
         id="data.analyse.read",
         kind="agent-skill",
         mode="read",
-        required_permissions=("read-data",),
+        required_permissions=("create-agent-run",),
         risk="low",
         resource_scoped=True,
+        delegated=False,
     ),
     CapabilityDescriptor(
         id="data.act.write",
         kind="agent-skill",
         mode="write",
-        required_permissions=("read-data",),
+        required_permissions=("create-agent-run",),
         risk="high",
         resource_scoped=True,
+        delegated=False,
     ),
 )

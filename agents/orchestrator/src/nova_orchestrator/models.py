@@ -134,6 +134,27 @@ class WebhookDelivery(Base):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class A2aAgentRegistration(Base):
+    """Self-registered A2A agent (native discovery).
+
+    Agents publish their Agent Card to the orchestrator on startup and refresh
+    it via heartbeat; the worker reads rows whose ``last_seen_at`` is within the
+    configured TTL to build its routing table + LLM menu metadata. Trusted for
+    discovery only - the per-run snapshot + shared catalog + Layer B gate remain
+    authoritative for authorization.
+    """
+
+    __tablename__ = "a2a_agent_registrations"
+
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    base_url: Mapped[str] = mapped_column(Text, nullable=False)
+    audience: Mapped[str] = mapped_column(Text, nullable=False)
+    card: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    skill_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class AgentAuditLog(Base):
     __tablename__ = "agent_audit_log"
 

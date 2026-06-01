@@ -14,25 +14,33 @@ from nova_orchestrator.prompts import (
     render_observations,
 )
 
+# Allowlist that surfaces the read umbrella: the umbrella + an underlying entitled
+# read cap so the pure-delegator menu actually lists it.
+_READ_ALLOWLIST = frozenset({"data.analyse.read", "data.query.select"})
+# ...and the write umbrella, backed by an entitled write capability.
+_WRITE_ALLOWLIST = frozenset({"data.act.write", "sales.create"})
 
-def test_menu_renders_rich_tool_catalog() -> None:
-    menu = _build_menu(frozenset({"data.analyse.read", "actions.next"}))
+
+def test_menu_renders_only_umbrella_delegation_skills() -> None:
+    menu = _build_menu(_READ_ALLOWLIST | _WRITE_ALLOWLIST)
     text = render_menu(menu)
+    # Only the two umbrella skills appear; concrete (delegated) caps never do.
     assert "data__analyse__read" in text
-    assert "actions__next" in text
+    assert "data__act__write" in text
+    assert "actions__next" not in text
+    assert "customers__search" not in text
     assert "When:" in text
-    assert "SQL data analyst" in text
 
 
 def test_first_turn_prompt_mandates_tool_use() -> None:
-    menu = _build_menu(frozenset({"data.analyse.read"}))
+    menu = _build_menu(_READ_ALLOWLIST)
     user = reason_user(prompt="how many customers?", menu=menu, observations=[])
     assert "MUST call exactly one tool" in user
     assert "data__analyse__read" in user
 
 
 def test_tools_for_menu_finish_toggle() -> None:
-    menu = _build_menu(frozenset({"data.analyse.read"}))
+    menu = _build_menu(_READ_ALLOWLIST)
     without_finish = tools_for_menu(menu, include_finish=False)
     names = {t["function"]["name"] for t in without_finish}
     assert tool_name_for("data.analyse.read") in names
@@ -44,7 +52,7 @@ def test_tools_for_menu_finish_toggle() -> None:
 
 
 def test_parse_tool_decision_maps_data_analyst_agent() -> None:
-    menu = _build_menu(frozenset({"data.analyse.read"}))
+    menu = _build_menu(_READ_ALLOWLIST)
     tool_name = tool_name_for("data.analyse.read")
     decision = parse_tool_decision(
         [{"name": tool_name, "args": {}, "id": "1", "type": "tool_call"}],
@@ -55,7 +63,7 @@ def test_parse_tool_decision_maps_data_analyst_agent() -> None:
 
 
 def test_parse_finish_tool() -> None:
-    menu = _build_menu(frozenset({"data.analyse.read"}))
+    menu = _build_menu(_READ_ALLOWLIST)
     decision = parse_tool_decision(
         [{"name": FINISH_TOOL_NAME, "args": {"note": "done"}, "id": "1", "type": "tool_call"}],
         menu,
@@ -64,45 +72,15 @@ def test_parse_finish_tool() -> None:
     assert decision.note == "done"
 
 
-def test_menu_exposes_new_resolver_and_write_tools() -> None:
-    menu = _build_menu(
-        frozenset(
-            {
-                "customers.search",
-                "customers.get",
-                "actions.addComment",
-                "issues.update",
-                "sop.addVersion",
-            }
-        )
-    )
-    text = render_menu(menu)
-    for tool in [
-        "customers__search",
-        "customers__get",
-        "actions__addComment",
-        "issues__update",
-        "sop__addVersion",
-    ]:
-        assert tool in text
-
-
-def test_scoped_tool_marker_points_to_resolver_first() -> None:
-    # A scoped read renders guidance to resolve the id first rather than demanding
-    # the user supply a UUID.
-    menu = _build_menu(frozenset({"customers.get"}))
-    text = render_menu(menu)
-    assert "search/list tool first" in text
-    # A non-scoped resolver carries no such marker.
-    resolver = render_menu(_build_menu(frozenset({"customers.search"})))
-    assert "search/list tool first" not in resolver
-
-
-def test_reason_system_documents_resolver_first_policy() -> None:
-    # The routing policy must tell the model to resolve names via search/list tools.
-    assert "customers__search" in REASON_SYSTEM
-    assert "actions__list" in REASON_SYSTEM
-    assert "Never invent or guess a UUID" in REASON_SYSTEM
+def test_reason_system_documents_pure_delegation_policy() -> None:
+    # The router prompt must describe itself as a pure delegator routing only to
+    # the two umbrella skills, and must NOT mention concrete resolver tools (the
+    # agent owns id resolution now).
+    assert "PURE DELEGATOR" in REASON_SYSTEM
+    assert "data__analyse__read" in REASON_SYSTEM
+    assert "data__act__write" in REASON_SYSTEM
+    assert "customers__search" not in REASON_SYSTEM
+    assert "actions__list" not in REASON_SYSTEM
 
 
 def test_observations_carry_structured_data_for_grounding() -> None:

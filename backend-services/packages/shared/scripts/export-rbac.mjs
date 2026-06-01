@@ -3,7 +3,7 @@
 // TypeScript source of truth. Run after building the package:
 //   npm run build -w @nova/shared && npm run rbac:export -w @nova/shared
 // The generated JSON is committed and consumed by
-// services/orchestrator/scripts/generate_nova_authz.py; CI fails on drift.
+// agents/orchestrator/scripts/generate_nova_authz.py; CI fails on drift.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -31,6 +31,7 @@ const registry = {
     requiredPermissions: [...capability.requiredPermissions],
     risk: capability.risk,
     resourceScoped: capability.resourceScoped,
+    delegated: capability.delegated ?? false,
   })),
 };
 

@@ -21,8 +21,18 @@ class SchemaView:
 
 @dataclass(frozen=True)
 class QueryAttempt:
-    """One executed (or rejected) query. ``sql``/``rows`` stay in-process only;
-    only the hash + row metadata are ever surfaced in events/logs."""
+    """One executed (or rejected) read step. ``sql``/``rows`` stay in-process
+    only; only the hash + row metadata are ever surfaced in events/logs.
+
+    A read step is one of TWO families, distinguished by ``source``:
+      - ``"sql"`` (default): a free-form SELECT over the curated ``mcp_read``
+        views via the DB MCP server; ``sql`` holds the statement.
+      - ``"capability"``: a structured, cataloged read capability dispatched via
+        the Node gateway (e.g. ``customers.search`` -> ``sales.report.customer``);
+        ``capability_id`` is set and ``sql`` holds a human label, not SQL.
+    Both flow through the same guards/critique/compose so the loop stays bounded
+    and the planner can ground (and resolve ids) from prior ``rows``.
+    """
 
     sql: str
     sql_hash: str | None
@@ -30,6 +40,8 @@ class QueryAttempt:
     truncated: bool
     error: str | None
     rows: tuple[dict[str, Any], ...] = ()
+    source: Literal["sql", "capability"] = "sql"
+    capability_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +113,9 @@ class GraphState(TypedDict, total=False):
     pending_sql: str
     pending_params: list[str]
     skip_execute: bool
+    # The structured read capability the planner chose this turn (resolver /
+    # detail read / scoped report); dispatched + re-gated in ``dispatch_read``.
+    pending_read: CapabilityCall | None
     write_calls: list[CapabilityCall]
     write_outcomes: list[WriteOutcome]
     answer: str | None

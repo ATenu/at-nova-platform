@@ -124,22 +124,66 @@ def _step_already_done(session: Session, run_id: str, idempotency_key: str) -> b
     return existing is not None and existing.status == "completed"
 
 
-def _build_menu(allowlist: frozenset[str]) -> tuple[MenuItem, ...]:
+def _has_entitled_underlying(allowlist: frozenset[str], mode: str) -> bool:
+    """True when the allowlist holds something the agent could act on for ``mode``.
+
+    The orchestrator is a pure delegator: it never lists the concrete
+    (``delegated``) business capabilities, but an umbrella is only worth showing
+    when the user is actually entitled to at least one underlying capability the
+    agent can run for that mode. For reads this is any entitled ``delegated``
+    read capability OR the free-form SQL ``mcp-tool`` surface (``read-data``);
+    for writes, any entitled ``delegated`` write capability.
+    """
+    for capability_id in allowlist:
+        underlying = get_capability(capability_id)
+        if underlying is None:
+            continue
+        if underlying.delegated and underlying.mode == mode:
+            return True
+        if mode == "read" and underlying.kind == "mcp-tool" and underlying.mode == "read":
+            return True
+    return False
+
+
+def _build_menu(
+    allowlist: frozenset[str], registry: AgentRegistry | None = None
+) -> tuple[MenuItem, ...]:
     """Layer A: the only actions the reasoner may ever choose from (as LLM tools).
 
-    Only orchestrator-dispatchable capabilities are exposed. ``mcp-tool``
-    capabilities (e.g. ``data.query.select``) are the data agents' OWN internal
-    tools served by the DB MCP server; the worker cannot execute them directly,
-    so showing them would let the model pick a dead end. ``agent-skill``
-    capabilities are dispatchable either via A2A (if an agent is registered) or
-    via the Node tool gateway, so they are the menu.
+    The orchestrator is a PURE DELEGATOR, so the menu collapses to the umbrella
+    delegation skills (``data.analyse.read`` / ``data.act.write``) only. The
+    concrete business capabilities are ``delegated`` (agent-internal) and the
+    ``mcp-tool`` capabilities are the data agents' OWN tools served by the DB MCP
+    server; neither is dispatchable by the worker, so both are excluded. An
+    umbrella is shown only when the user is entitled to at least one underlying
+    capability of that mode (``_has_entitled_underlying``), keeping Layer A
+    meaningful without ever naming a concrete capability.
+
+    For each umbrella the agent's trusted Agent Card is the source of truth for
+    the menu text: when the registry has a card entry, its description and intent
+    tags drive ``summary``/``when_to_use`` so updating the card (not the
+    orchestrator) changes how the skill is advertised. The curated guide
+    (``spec_for``) is the fallback for the static seed path and for any skill the
+    card does not describe.
     """
     items: list[MenuItem] = []
     for capability_id in sorted(allowlist):
         capability = get_capability(capability_id)
-        if capability is None or capability.kind == "mcp-tool":
+        if capability is None or capability.kind == "mcp-tool" or capability.delegated:
+            continue
+        if not _has_entitled_underlying(allowlist, capability.mode):
             continue
         guide = spec_for(capability_id)
+        summary = guide.summary
+        when_to_use = guide.when_to_use
+        if registry is not None:
+            card = registry.card_skill_for(capability_id)
+            if card is not None and card.description:
+                summary = card.description
+                if card.tags:
+                    when_to_use = (
+                        "Use when the request relates to: " + ", ".join(card.tags) + "."
+                    )
         items.append(
             MenuItem(
                 capability_id=capability.id,
@@ -147,8 +191,8 @@ def _build_menu(allowlist: frozenset[str]) -> tuple[MenuItem, ...]:
                 mode=capability.mode,
                 resource_scoped=capability.resource_scoped,
                 tool_name=tool_name_for(capability.id),
-                summary=guide.summary,
-                when_to_use=guide.when_to_use,
+                summary=summary,
+                when_to_use=when_to_use,
                 input_fields=guide.input_fields,
             )
         )
@@ -156,7 +200,7 @@ def _build_menu(allowlist: frozenset[str]) -> tuple[MenuItem, ...]:
 
 
 def build_graph(deps: OrchestratorDeps) -> CompiledStateGraph:
-    menu = _build_menu(deps.snapshot.capability_allowlist)
+    menu = _build_menu(deps.snapshot.capability_allowlist, deps.registry)
 
     def load_context(state: OrchestrationState) -> dict[str, Any]:
         try:
@@ -215,17 +259,14 @@ def build_graph(deps: OrchestratorDeps) -> CompiledStateGraph:
         if signature in set(state.get("attempts", [])):
             return {"route": "compose", "decision_action": "finish"}
         return {
-            "route": _route_for_capability(capability_id, deps.registry),
+            # Pure delegation: every menu capability is an umbrella owned by a
+            # registered agent, so the only dispatch route is the A2A agent path.
+            "route": "agent",
             "decision_capability": capability_id,
             "decision_input": tool_input,
             "iteration": iteration + 1,
             "attempts": [signature],
         }
-
-    def tool_dispatch(state: OrchestrationState) -> dict[str, Any]:
-        call = StepCall(state.get("decision_capability", ""), dict(state.get("decision_input", {})))
-        result = _run_tool_step(deps, call, int(state.get("iteration", 0)))
-        return _after_dispatch(result)
 
     def agent_dispatch(state: OrchestrationState) -> dict[str, Any]:
         call = StepCall(
@@ -280,7 +321,6 @@ def build_graph(deps: OrchestratorDeps) -> CompiledStateGraph:
     builder = StateGraph(OrchestrationState)
     builder.add_node("load_context", load_context)
     builder.add_node("reason", reason)
-    builder.add_node("tool_dispatch", tool_dispatch)
     builder.add_node("agent_dispatch", agent_dispatch)
     builder.add_node("critique", critique)
     builder.add_node("compose", compose)
@@ -293,10 +333,7 @@ def build_graph(deps: OrchestratorDeps) -> CompiledStateGraph:
     builder.add_conditional_edges(
         "reason",
         _route,
-        {"tool": "tool_dispatch", "agent": "agent_dispatch", "compose": "compose"},
-    )
-    builder.add_conditional_edges(
-        "tool_dispatch", _route, {"critique": "critique", "end": END}
+        {"agent": "agent_dispatch", "compose": "compose"},
     )
     builder.add_conditional_edges(
         "agent_dispatch", _route, {"critique": "critique", "end": END}
@@ -312,21 +349,6 @@ def build_graph(deps: OrchestratorDeps) -> CompiledStateGraph:
 def _route(state: OrchestrationState) -> str:
     route = state.get("route")
     return route if isinstance(route, str) else "compose"
-
-
-def _route_for_capability(capability_id: str, registry: AgentRegistry | None) -> str:
-    """Route by *dispatchability*, not by catalog ``kind``.
-
-    A capability goes over A2A only if a real agent is registered for it
-    (e.g. the SQL analyst owns ``data.analyse.read`` / ``data.act.write``).
-    Every other authorized capability (``sales.report.customer``,
-    ``issues.create``, ``actions.next``, ...) is executed by the Node tool
-    gateway's ``CapabilityExecutor``, so it routes to the tool path. Routing is
-    not authorization: Layer B re-checks the hop regardless of the route.
-    """
-    if registry is not None and registry.agent_for_skill(capability_id) is not None:
-        return "agent"
-    return "tool"
 
 
 def _missing_required(spec: CapabilityToolSpec, tool_input: dict[str, Any]) -> list[str]:
@@ -420,158 +442,6 @@ def _conversation_id(session_factory: sessionmaker[Session], run_id: str) -> str
             return (run.conversation_id or "") if run is not None else ""
     except Exception:  # noqa: BLE001 - telemetry read must never break the run
         return ""
-
-
-def _run_tool_step(deps: OrchestratorDeps, step: StepCall, index: int) -> StepResult:
-    run_id = deps.run_id
-    gateway = deps.gateway
-    idempotency_key = f"tool-call:{run_id}:{step.capability_id}:{index}"
-    with deps.session_factory() as session:
-        run = _lock_and_load(session, run_id)
-        if run is None or run.status in TERMINAL_STATUSES:
-            return StepResult(None, run.status if run else "missing")
-        if run.cancel_requested:
-            set_run_status(session, run, "canceled")
-            emit_event(session, run, event_type="run.canceled", payload={}, visibility="user")
-            session.commit()
-            return StepResult(None, "canceled")
-        if _step_already_done(session, run_id, idempotency_key):
-            return StepResult(Observation(step.capability_id, "tool", "completed"))
-
-        decision = evaluate_capability(step.capability_id, deps.snapshot.roles)
-        required_permission = _required_permission_for(step.capability_id)
-        if not decision.allowed:
-            emit_event(
-                session,
-                run,
-                event_type="authz.denied",
-                payload={"capability": step.capability_id, "reason": decision.reason},
-                visibility="security",
-            )
-            record_audit(
-                session,
-                run_id=run.id,
-                owner_subject=run.owner_subject,
-                actor=WORKER_ACTOR,
-                action="tool.invoke",
-                capability=step.capability_id,
-                decision="deny",
-                reason=decision.reason,
-            )
-            session.commit()
-            return StepResult(
-                Observation(step.capability_id, "tool", "denied", reason=decision.reason)
-            )
-
-        agent_step = AgentStep(
-            id=_uuid(),
-            run_id=run.id,
-            type="tool_call",
-            status="running",
-            capability=step.capability_id,
-            required_permission=required_permission,
-            tool_name=step.capability_id,
-            idempotency_key=idempotency_key,
-            started_at=_now(),
-        )
-        session.add(agent_step)
-        emit_event(
-            session,
-            run,
-            event_type="tool.call.started",
-            payload={"capability": step.capability_id, "input": safe_io(step.tool_input)},
-            visibility="user",
-        )
-        run.last_heartbeat_at = _now()
-        session.commit()
-
-    # External hop OUTSIDE the DB transaction (no DB locks held during network IO).
-    error: str | None = None
-    result: dict[str, Any] | None = None
-    try:
-        with lf.tool_span(f"tool:{step.capability_id}", capability=step.capability_id):
-            result = gateway.execute_capability(run_id, step.capability_id, step.tool_input)
-    except ToolGatewayError as exc:
-        error = f"tool_gateway_error:{exc.status_code or 'network'}"
-
-    with deps.session_factory() as session:
-        run = _lock_and_load(session, run_id)
-        if run is None:
-            return StepResult(None, "missing")
-        persisted_step = session.execute(
-            select(AgentStep).where(
-                AgentStep.run_id == run_id, AgentStep.idempotency_key == idempotency_key
-            )
-        ).scalar_one_or_none()
-        if error is not None or result is None:
-            _mark_step_failed(persisted_step, error)
-            if persisted_step is not None:
-                session.add(persisted_step)
-            emit_event(
-                session,
-                run,
-                event_type="tool.call.failed",
-                payload={
-                    "capability": step.capability_id,
-                    "input": safe_io(step.tool_input),
-                    "error": error,
-                },
-                visibility="user",
-            )
-            record_audit(
-                session,
-                run_id=run.id,
-                owner_subject=run.owner_subject,
-                actor=WORKER_ACTOR,
-                action="tool.invoke",
-                capability=step.capability_id,
-                decision="deny" if error == "tool_gateway_error:403" else "allow",
-                reason=error,
-            )
-            run.last_heartbeat_at = _now()
-            session.commit()
-            return StepResult(
-                Observation(step.capability_id, "tool", "failed", reason=error)
-            )
-        summary = str(result.get("summary", ""))
-        links = _coerce_links(result.get("links"))
-        # Carry the full result the owner is entitled to (secret-stripped + size
-        # bounded by safe_io) so the composer can ground in the actual rows, not
-        # just the count summary. Same payload feeds the user-visible event.
-        data = safe_io(result.get("data"))
-        if persisted_step is not None:
-            persisted_step.status = "completed"
-            persisted_step.completed_at = _now()
-            session.add(persisted_step)
-        emit_event(
-            session,
-            run,
-            event_type="tool.call.completed",
-            payload={
-                "capability": step.capability_id,
-                "summary": summary,
-                "input": safe_io(step.tool_input),
-                "output": data,
-            },
-            visibility="user",
-        )
-        record_audit(
-            session,
-            run_id=run.id,
-            owner_subject=run.owner_subject,
-            actor=WORKER_ACTOR,
-            action="tool.invoke",
-            capability=step.capability_id,
-            decision="allow",
-            reason=REASON_ALLOWED,
-        )
-        run.last_heartbeat_at = _now()
-        session.commit()
-    return StepResult(
-        Observation(
-            step.capability_id, "tool", "completed", summary=summary, links=links, data=data
-        )
-    )
 
 
 def _run_agent_step(
@@ -748,11 +618,14 @@ def _run_agent_step(
         # tracked over SSE and delivered to the webhook. Payloads are redacted +
         # bounded; the agent never returns raw SQL or rows.
         for event in agent_result.events:
+            # event.payload is a dict, so safe_io returns a dict; the isinstance
+            # check narrows the object return type for the typed emit_event.
+            safe_payload = safe_io(event.payload)
             emit_event(
                 session,
                 run,
                 event_type=event.type,
-                payload=safe_io(event.payload),
+                payload=safe_payload if isinstance(safe_payload, dict) else {},
                 visibility="user",
             )
 
@@ -919,16 +792,3 @@ def _fallback_answer(observations: list[Observation]) -> str:
         "I could not map your request to an action you are entitled to run, or a "
         "required detail was missing. Please rephrase or include any needed record id."
     )
-
-
-def _coerce_links(value: object) -> list[dict[str, str]]:
-    links: list[dict[str, str]] = []
-    if isinstance(value, list):
-        for item in value:
-            if isinstance(item, dict):
-                label = item.get("label")
-                href = item.get("href")
-                link_type = item.get("type")
-                if isinstance(label, str) and isinstance(href, str) and isinstance(link_type, str):
-                    links.append({"label": label, "href": href, "type": link_type})
-    return links

@@ -15,8 +15,8 @@ from typing import Any
 from at_sql_analyser.auth.resource_server import VerifiedCaller
 from at_sql_analyser.auth.snapshot import VerifiedSnapshot
 from at_sql_analyser.harness.llm import (
-    QueryDecision,
     ReadCritique,
+    ReadStep,
     WriteItem,
     WritePlan,
 )
@@ -47,7 +47,7 @@ class FakeReasoner:
     def __init__(
         self,
         *,
-        queries: Sequence[QueryDecision] = (),
+        queries: Sequence[ReadStep] = (),
         answer: str = "done",
         writes: Sequence[WriteItem] = (),
     ) -> None:
@@ -55,21 +55,27 @@ class FakeReasoner:
         self._answer = answer
         self._writes = list(writes)
         self.seen_authorized_writes: list[tuple[str, ...]] = []
+        self.seen_authorized_reads: list[tuple[str, ...]] = []
+        self.seen_sql_enabled: list[bool] = []
         self.seen_conversation_history: str = ""
 
-    async def propose_query(
+    async def plan_read_step(
         self,
         *,
         goal: str,
         schema: Sequence[SchemaView],
+        authorized_reads: Sequence[str],
         history: Sequence[QueryAttempt],
+        sql_enabled: bool,
         conversation_history: str = "",
-    ) -> QueryDecision:
+    ) -> ReadStep:
         self.seen_conversation_history = conversation_history
+        self.seen_authorized_reads.append(tuple(authorized_reads))
+        self.seen_sql_enabled.append(sql_enabled)
         index = len(history)
         if index < len(self._queries):
             return self._queries[index]
-        return QueryDecision(action="finish")
+        return ReadStep(action="finish")
 
     async def critique(
         self, *, goal: str, history: Sequence[QueryAttempt]
@@ -97,8 +103,17 @@ class FakeReasoner:
         return ""
 
 
-def read_query(sql: str) -> QueryDecision:
-    return QueryDecision(action="query", sql=sql, params=[], rationale="test")
+def read_query(sql: str) -> ReadStep:
+    return ReadStep(action="sql", sql=sql, params=[], rationale="test")
+
+
+def read_capability(capability_id: str, **tool_input: Any) -> ReadStep:
+    return ReadStep(
+        action="capability",
+        capability_id=capability_id,
+        input=dict(tool_input),
+        rationale="test",
+    )
 
 
 class FakeDataClient:
@@ -193,13 +208,17 @@ class FakeSnapshotClient:
 def make_snapshot(
     *,
     roles: tuple[str, ...] = ("ops-compliance",),
-    allowlist: tuple[str, ...] = ("data.analyse.read",),
+    allowlist: tuple[str, ...] = (
+        "data.analyse.read",
+        "data.query.select",
+        "data.schema.describe",
+    ),
 ) -> VerifiedSnapshot:
     return VerifiedSnapshot(
         run_id="run-1",
         owner_subject="user-1",
         roles=roles,
-        permissions=frozenset({"read-data"}),
+        permissions=frozenset({"read-data", "create-agent-run"}),
         capability_allowlist=frozenset(allowlist),
         expires_at=datetime.now(UTC) + timedelta(minutes=5),
     )

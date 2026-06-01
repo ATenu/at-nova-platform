@@ -54,6 +54,11 @@ def _bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _csv(name: str, default: str) -> tuple[str, ...]:
+    raw = _optional(name, default)
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
 @dataclass(frozen=True)
 class OrchestratorConfig:
     role: str
@@ -77,8 +82,23 @@ class OrchestratorConfig:
     nova_api_internal_url: str
     max_run_steps: int
     # A2A SQL analyst agent: endpoint + the audience the worker mints tokens for.
+    # Used only as an optional discovery seed (see a2a_registry_seed_sql_analyst);
+    # native discovery is the self-registration registry below.
     sql_analyst_agent_url: str
     sql_analyst_agent_audience: str
+    # Native A2A dynamic discovery (self-registration registry).
+    # Only registrations whose ``last_seen_at`` is within this TTL are considered
+    # live; agents heartbeat well under it. The registration endpoint accepts a
+    # service token only from one of these authorized parties (azp pinning, fail
+    # closed) - adding a new agent means adding its Keycloak client id here.
+    a2a_registry_ttl_s: int
+    agent_registration_authorized_parties: tuple[str, ...]
+    # Optional SSRF guard: when non-empty, a registering agent's base_url host
+    # must be in this allowlist (in addition to the http/https scheme check).
+    agent_registration_allowed_hosts: tuple[str, ...]
+    # Resilience seed: if the live registry is empty, fall back to the statically
+    # configured SQL analyst so existing deployments keep working during rollout.
+    a2a_registry_seed_sql_analyst: bool
     # Wall-clock budget for one outbound A2A task (token mint + card resolution +
     # the agent's full bounded loop). MUST exceed the agent's own
     # AGENT_TOTAL_TIMEOUT_S plus one in-flight LLM call, otherwise the worker
@@ -139,6 +159,12 @@ def load_config() -> OrchestratorConfig:
         sql_analyst_agent_audience=_optional(
             "SQL_ANALYST_AGENT_AUDIENCE", "nova-agent-sql-analyst"
         ),
+        a2a_registry_ttl_s=_int("A2A_REGISTRY_TTL_SECONDS", 120),
+        agent_registration_authorized_parties=_csv(
+            "AGENT_REGISTRATION_AUTHORIZED_PARTIES", "nova-agent-sql-analyst"
+        ),
+        agent_registration_allowed_hosts=_csv("AGENT_REGISTRATION_ALLOWED_HOSTS", ""),
+        a2a_registry_seed_sql_analyst=_bool("A2A_REGISTRY_SEED_SQL_ANALYST", True),
         # Default 180s = agent total budget (120s) + one in-flight LLM call (30s)
         # + headroom for token/card/network. Stays well under the Celery soft
         # time limit so the worker, not httpx, owns the ultimate ceiling.

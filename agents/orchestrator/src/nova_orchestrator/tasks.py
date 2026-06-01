@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from .agent_client import AgentClient
 from .agent_state import AgentStateStore
-from .agents import AgentRegistry, build_default_registry
+from .agents import AgentRegistry, load_registry_from_store
 from .authz.snapshot import EntitlementSnapshot, SnapshotIntegrityError, verify_snapshot
 from .celery_app import app
 from .config import load_config
@@ -206,7 +206,11 @@ def run_orchestration(
     agent_client = AgentClient(
         tokens=tokens, timeout_s=config.agent_request_timeout_s
     )
-    registry = build_default_registry(config)
+    session_factory = get_session_factory()
+    # Native A2A discovery: build the routing table from live self-registrations
+    # (falls back to the static SQL-analyst seed when the registry is empty).
+    with session_factory() as session:
+        registry = load_registry_from_store(session, config)
     reasoner: Reasoner = OpenAIReasoner(
         api_key=config.openai_api_key,
         model=config.llm_model,
@@ -230,7 +234,7 @@ def run_orchestration(
         )
 
     return process_run(
-        get_session_factory(),
+        session_factory,
         run_id,
         entitlement_snapshot_hash,
         gateway=gateway,

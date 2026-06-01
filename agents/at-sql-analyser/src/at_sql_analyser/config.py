@@ -83,6 +83,15 @@ class AgentConfig:
     # each resource server (the dev realm's mode).
     request_audience_scopes: bool
 
+    # Native A2A self-registration: publish this agent's card to the orchestrator
+    # on startup + heartbeat so it is discovered without static config. Discovery
+    # only - authorization stays with the per-run snapshot + Layer B gate. The
+    # agent mints an ``orchestrator_audience_scope`` token to call the endpoint.
+    orchestrator_internal_url: str
+    orchestrator_audience_scope: str
+    registration_enabled: bool
+    registration_heartbeat_s: int
+
     # Downstream endpoints.
     nova_api_internal_url: str
     db_mcp_url: str
@@ -134,6 +143,14 @@ def load_config() -> AgentConfig:
         agent_client_secret=_optional("AGENT_CLIENT_SECRET", ""),
         mcp_audience_scope=_optional("MCP_AUDIENCE_SCOPE", "nova-mcp-data"),
         request_audience_scopes=_bool("AGENT_REQUEST_AUDIENCE_SCOPES", False),
+        orchestrator_internal_url=_optional(
+            "ORCHESTRATOR_INTERNAL_URL", "http://orchestrator:8001"
+        ),
+        orchestrator_audience_scope=_optional(
+            "ORCHESTRATOR_AUDIENCE_SCOPE", "nova-orchestrator"
+        ),
+        registration_enabled=_bool("A2A_REGISTRATION_ENABLED", True),
+        registration_heartbeat_s=_int("A2A_REGISTRATION_HEARTBEAT_SECONDS", 60),
         nova_api_internal_url=_optional("NOVA_API_INTERNAL_URL", "http://nova-api:3000"),
         db_mcp_url=_optional("DB_MCP_URL", "http://db-mcp-server:8002"),
         capability_audience_scope=_optional("CAPABILITY_AUDIENCE_SCOPE", "nova-mcp-sales"),

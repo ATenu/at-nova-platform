@@ -4,7 +4,7 @@ import { buildEntitlementSnapshot, computeSnapshotHash } from './entitlement-sna
 /**
  * Cross-language integrity contract. The Python worker recomputes this exact
  * hash; the vector below MUST match the one asserted in the Python parity test
- * (`services/orchestrator/tests/test_snapshot_parity.py`).
+ * (`agents/orchestrator/tests/test_snapshot_parity.py`).
  */
 const PARITY_VECTOR = {
   ownerSubject: 'kc-sub-123',

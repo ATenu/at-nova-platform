@@ -45,6 +45,10 @@ def make_config() -> AgentConfig:
         agent_client_secret="",
         mcp_audience_scope="nova-mcp-data",
         request_audience_scopes=False,
+        orchestrator_internal_url="http://orchestrator:8001",
+        orchestrator_audience_scope="nova-orchestrator",
+        registration_enabled=False,
+        registration_heartbeat_s=60,
         nova_api_internal_url="http://nova-api:3000",
         db_mcp_url="http://db-mcp-server:8002",
         capability_audience_scope="nova-mcp-sales",
@@ -72,6 +76,7 @@ def build_client(
     data: FakeDataClient | None = None,
     capability_client: FakeCapabilityClient | None = None,
     snap_error: Exception | None = None,
+    catalog: list[dict[str, Any]] | None = None,
 ) -> tuple[TestClient, FakeDataClient, FakeCapabilityClient]:
     data = data or FakeDataClient()
     snap_client = FakeSnapshotClient(snapshot or make_snapshot())
@@ -88,6 +93,8 @@ def build_client(
         resource_server=FakeResourceServer(),
         data_client_factory=lambda _run_id: data,
         capability_client=cap_client,
+        # Inject the catalog so the card builds without a live MCP fetch.
+        catalog=catalog if catalog is not None else [],
     )
     return TestClient(app), data, cap_client
 
@@ -144,6 +151,56 @@ def test_agent_card_is_public_and_lists_skills() -> None:
     assert res.status_code == 200
     ids = {s["id"] for s in res.json()["skills"]}
     assert "data.analyse.read" in ids
+
+
+def test_agent_card_advertises_both_skills_with_metadata() -> None:
+    # The card is the source of truth for dynamic discovery: every advertised
+    # skill must carry a non-empty description and intent tags so the
+    # orchestrator can build a meaningful Layer A menu without a code change.
+    client, _, _ = build_client()
+    skills = client.get("/.well-known/agent-card.json").json()["skills"]
+    by_id = {s["id"]: s for s in skills}
+    assert {"data.analyse.read", "data.act.write"} <= set(by_id)
+    for skill in by_id.values():
+        assert skill["description"].strip()
+        assert skill["tags"]
+
+
+def test_agent_card_read_skill_is_routing_grade_from_catalog() -> None:
+    # The card advertises the data AREAS (view names) for accurate delegation but
+    # NOT column-level detail: column/filter grounding stays in the agent's own
+    # per-run planner, and the orchestrator never needs (or fetches) the schema.
+    catalog = [
+        {
+            "schema": "mcp_read",
+            "name": "sales",
+            "description": "Sales facts.",
+            "ownerScoped": False,
+            "columns": [
+                {"name": "id", "type": "uuid", "pii": False},
+                {"name": "total_amount_receipt", "type": "numeric", "pii": False},
+            ],
+        },
+        {
+            "schema": "mcp_read",
+            "name": "customers",
+            "description": "Customers.",
+            "ownerScoped": False,
+            "columns": [{"name": "full_name", "type": "varchar", "pii": True}],
+        },
+    ]
+    client, _, _ = build_client(catalog=catalog)
+    skills = client.get("/.well-known/agent-card.json").json()["skills"]
+    read = next(s for s in skills if s["id"] == "data.analyse.read")
+    # Data areas are advertised for routing...
+    assert "sales" in read["description"]
+    assert "customers" in read["description"]
+    # ...but column-level detail is NOT leaked into the orchestrator menu.
+    assert "full_name" not in read["description"]
+    assert "total_amount_receipt" not in read["description"]
+    # View names still become intent tags for steering.
+    assert "sales" in read["tags"]
+    assert "customers" in read["tags"]
 
 
 def test_read_task_completes() -> None:

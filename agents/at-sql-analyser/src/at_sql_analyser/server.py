@@ -54,9 +54,11 @@ from .harness.graph import GraphDeps, run_task
 from .harness.guards import GuardLimits
 from .harness.llm import OpenAIReasoner, Reasoner
 from .harness.state import AgentResult, TaskInput
+from .mcp.catalog_client import fetch_catalog
 from .mcp.data_client import DataClient, McpDataClient
 from .observability import langfuse_tracing as lf
 from .observability.tracing import build_tracer
+from .registration import AgentRegistrar
 from .skills import AGENT_NAME, SKILL_ACT_WRITE, SKILL_ANALYSE_READ, advertised_skills
 from .tools.capability_client import CapabilityClient, HttpCapabilityClient
 
@@ -90,8 +92,20 @@ _KEY_LANGFUSE_PARENT = "langfuseParentObservationId"
 # This agent's own section name in the shared per-run state document.
 _STATE_ACTOR = f"agent:{AGENT_NAME}"
 
+# The free-form SQL data-layer entitlement (DB MCP `run_select_query`). The read
+# loop only offers the SQL tool family when the caller holds this capability;
+# otherwise it plans solely from the entitled structured read capabilities.
+SKILL_QUERY_SELECT = "data.query.select"
 
-def build_agent_card(cfg: AgentConfig) -> AgentCard:
+
+def build_agent_card(
+    cfg: AgentConfig, catalog: list[dict[str, Any]] | None = None
+) -> AgentCard:
+    """Build the Agent Card, enriching the read skill from the MCP view catalog.
+
+    ``catalog`` is the curated view metadata discovered from the DB MCP server at
+    startup (empty/None ⇒ the read skill uses its static fallback description).
+    """
     return AgentCard(
         name=AGENT_NAME,
         description="Read-only SQL analyst over curated, PII-aware business views.",
@@ -107,7 +121,7 @@ def build_agent_card(cfg: AgentConfig) -> AgentCard:
                 description=skill.description,
                 tags=list(skill.intent_keywords),
             )
-            for skill in advertised_skills()
+            for skill in advertised_skills(catalog)
         ],
     )
 
@@ -310,6 +324,14 @@ class SqlAnalystExecutor(AgentExecutor):
         store: AgentStateStore | None = None,
         callbacks: object | None = None,
     ) -> AgentResult:
+        # The umbrella is a broad delegation entry point (gated only on the
+        # universal create-agent-run permission). Real authorization is per
+        # concrete capability: the read planner is shown ONLY the entitled
+        # structured reads, each re-gated (Layer B) before dispatch, and the
+        # free-form SQL family is offered ONLY when the caller actually holds the
+        # data-layer entitlement (``data.query.select``) — otherwise the MCP
+        # server would deny it. So a user with no read entitlement at all gets an
+        # empty toolset and a graceful "could not determine" answer.
         decision = authorize(snapshot, SKILL_ANALYSE_READ)
         if not decision.allowed:
             tracer_event(
@@ -318,11 +340,19 @@ class SqlAnalystExecutor(AgentExecutor):
             )
             return AgentResult("denied", None, decision.reason, 0)
 
-        data_client = self._make_data_client(task.run_id)
+        def authorizer(capability_id: str) -> tuple[bool, str]:
+            per_action = authorize(snapshot, capability_id)
+            return per_action.allowed, per_action.reason
+
+        sql_enabled = authorize(snapshot, SKILL_QUERY_SELECT).allowed
+        data_client = self._make_data_client(task.run_id) if sql_enabled else None
         deps = GraphDeps(
             reasoner=self._reasoner,
             limits=self._limits,
             data_client=data_client,
+            capability_client=self._capabilities,
+            authorize=authorizer,
+            sql_enabled=sql_enabled,
             on_event=on_event,
             conversation_history=_history_text(store, task.conversation_id),
             langfuse_callbacks=callbacks,
@@ -330,7 +360,8 @@ class SqlAnalystExecutor(AgentExecutor):
         try:
             result = await run_task(task, deps)
         finally:
-            await data_client.aclose()
+            if data_client is not None:
+                await data_client.aclose()
         _persist_section(store, task, snapshot, SKILL_ANALYSE_READ, result)
         return result
 
@@ -455,6 +486,8 @@ def create_app(
     resource_server: ResourceServerPort | None = None,
     data_client_factory: DataClientFactory | None = None,
     capability_client: CapabilityClient | None = None,
+    registrar: AgentRegistrar | None = None,
+    catalog: list[dict[str, Any]] | None = None,
 ) -> Starlette:
     cfg = config or load_config()
 
@@ -521,7 +554,23 @@ def create_app(
         state_store_factory=make_state_store,
     )
     handler = DefaultRequestHandler(agent_executor=executor, task_store=InMemoryTaskStore())
-    a2a_app = A2AStarletteApplication(agent_card=build_agent_card(cfg), http_handler=handler)
+
+    # Discover the curated view catalog from the DB MCP server (snapshot-free,
+    # best-effort) so the card advertises the ACTUAL data surface. Tests inject
+    # ``catalog`` to stay hermetic; in production None triggers the live fetch
+    # (fail-soft to the static description). The SAME card is served at discovery
+    # and published to the orchestrator, so both views stay consistent.
+    resolved_catalog = (
+        catalog
+        if catalog is not None
+        else fetch_catalog(
+            base_url=cfg.db_mcp_url,
+            tokens=tokens,
+            audience_scope=cfg.mcp_audience_scope,
+        )
+    )
+    agent_card = build_agent_card(cfg, resolved_catalog)
+    a2a_app = A2AStarletteApplication(agent_card=agent_card, http_handler=handler)
     app: Starlette = a2a_app.build()
 
     async def health(_request: Request) -> Response:
@@ -529,4 +578,23 @@ def create_app(
 
     app.add_route("/health", health, methods=["GET"])
     app.add_middleware(BearerAuthMiddleware, resource_server=rs)
+
+    # Native A2A discovery: publish our card to the orchestrator on startup +
+    # heartbeat (fail-soft; never blocks serving). Disabled in tests/dev via
+    # config, or replaced by an injected registrar.
+    the_registrar = registrar
+    if the_registrar is None and cfg.registration_enabled:
+        the_registrar = AgentRegistrar(
+            orchestrator_url=cfg.orchestrator_internal_url,
+            audience_scope=cfg.orchestrator_audience_scope,
+            tokens=tokens,
+            name=AGENT_NAME,
+            base_url=cfg.public_url,
+            audience=cfg.agent_audience,
+            card=agent_card.model_dump(mode="json", by_alias=True, exclude_none=True),
+            heartbeat_s=cfg.registration_heartbeat_s,
+        )
+    if the_registrar is not None:
+        app.add_event_handler("startup", the_registrar.start)
+        app.add_event_handler("shutdown", the_registrar.stop)
     return app

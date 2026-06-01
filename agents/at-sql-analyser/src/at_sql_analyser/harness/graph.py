@@ -1,10 +1,14 @@
 """The autonomous SQL-analyst DAG (LangGraph).
 
-A bounded, guarded directed graph the agent navigates by LLM judgment:
+A bounded, guarded directed graph the agent navigates by LLM judgment. The read
+path is a ReAct loop over TWO tool families — free-form SQL (DB MCP server) and
+entitled structured read capabilities (Node gateway) — that the planner
+interleaves to resolve references and answer the question:
 
-    start ─▶ load_schema ─▶ propose ─▶ validate ─▶ execute ─▶ critique ─┐
-                              ▲                       │                  │
-                              └───────── refine ──────┴── (loop) ◀───────┘
+    start ─▶ load_schema ─▶ plan_read ─┬─▶ validate ─▶ execute ─────▶ critique ─┐
+                              ▲         │                                        │
+                              │         └─▶ dispatch_read ───────────▶ critique ─┤
+                              └────────────────── (loop) ◀──── refine ───────────┘
                                                                   │
                                               satisfied / budget ─▶ compose ─▶ END
 
@@ -13,13 +17,15 @@ A bounded, guarded directed graph the agent navigates by LLM judgment:
 Discipline (rule 040): typed state, node outputs validated before they touch
 state, explicit termination, max-iteration/query/time + no-progress guards, and
 a hard ``recursion_limit`` backstop. The LLM proposes; it never authorizes. The
-DB MCP server is the authoritative SQL gate; every write capability is gated
-again by ``authorize`` before dispatch.
+DB MCP server is the authoritative SQL gate; every concrete read AND write
+capability is re-gated by ``authorize`` (Layer B) before dispatch and re-checked
+by the Node gateway.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -94,6 +100,10 @@ class GraphDeps:
     data_client: DataClient | None = None
     capability_client: CapabilityClient | None = None
     authorize: Authorizer | None = None
+    # Whether the free-form SQL tool family is offered this run. True only when
+    # the caller holds the data-layer entitlement (``data.query.select``); when
+    # False the read loop uses ONLY the entitled structured read capabilities.
+    sql_enabled: bool = True
     on_event: EventSink = _noop
     clock: Callable[[], float] = time.monotonic
     # Read-only, orchestrator-aligned prior-turn context (from redis-agent). The
@@ -116,8 +126,11 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
 
     # -- read path ----------------------------------------------------------
     async def load_schema(state: GraphState) -> dict[str, Any]:
+        # The schema is only useful for the free-form SQL family. When SQL is not
+        # available (caller lacks read-data) skip the MCP round trip entirely —
+        # the MCP server would deny it — and plan from structured reads only.
         views: tuple[SchemaView, ...] = ()
-        if deps.data_client is not None:
+        if deps.sql_enabled and deps.data_client is not None:
             try:
                 with lf.tool_span("mcp:describe_schema"):
                     raw = await deps.data_client.describe_schema()
@@ -127,7 +140,7 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
         emit("agent.schema.loaded", {"viewCount": len(views)})
         return {"schema": views}
 
-    async def propose(state: GraphState) -> dict[str, Any]:
+    async def plan_read(state: GraphState) -> dict[str, Any]:
         iteration = int(state.get("iteration", 0))
         guard = evaluate_guards(
             iterations=iteration,
@@ -136,21 +149,57 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
             limits=deps.limits,
         )
         if guard.stop:
-            return {"route": "compose", "reason": guard.reason, "pending_sql": ""}
-        decision = await deps.reasoner.propose_query(
+            return {"route": "compose", "reason": guard.reason, "pending_sql": "",
+                    "pending_read": None}
+        authorized_reads = _authorized_read_ids(deps.authorize)
+        decision = await deps.reasoner.plan_read_step(
             goal=state["goal"],
             schema=state.get("schema", ()),
+            authorized_reads=authorized_reads,
             history=tuple(state.get("attempts", [])),
+            sql_enabled=deps.sql_enabled,
             conversation_history=deps.conversation_history,
         )
-        if decision.action == "finish" or not decision.sql.strip():
-            return {"route": "compose", "pending_sql": ""}
-        return {
-            "route": "validate",
-            "pending_sql": decision.sql,
-            "pending_params": list(decision.params),
-            "iteration": iteration + 1,
-        }
+        if (
+            decision.action == "capability"
+            and decision.capability_id in authorized_reads
+        ):
+            # Layer A: the planner may only pick from the entitled closed set;
+            # an out-of-set id is ignored here and re-gated again in dispatch.
+            call = CapabilityCall(
+                capability_id=decision.capability_id,
+                tool_input=dict(decision.input),
+                rationale=decision.rationale,
+            )
+            return {
+                "route": "dispatch_read",
+                "pending_read": call,
+                "pending_sql": "",
+                "iteration": iteration + 1,
+            }
+        if decision.action == "sql" and deps.sql_enabled and decision.sql.strip():
+            return {
+                "route": "validate",
+                "pending_sql": decision.sql,
+                "pending_params": list(decision.params),
+                "pending_read": None,
+                "iteration": iteration + 1,
+            }
+        return {"route": "compose", "pending_sql": "", "pending_read": None}
+
+    async def dispatch_read(state: GraphState) -> dict[str, Any]:
+        call = state.get("pending_read")
+        if call is None:
+            return {"route": "critique"}
+        attempt = await _dispatch_read(
+            call=call,
+            authorize=deps.authorize,
+            capability_client=deps.capability_client,
+            run_id=state.get("run_id", ""),
+            index=len(state.get("attempts", [])),
+            emit=emit,
+        )
+        return {"route": "critique", "attempts": [attempt], "pending_read": None}
 
     async def validate(state: GraphState) -> dict[str, Any]:
         sql = state.get("pending_sql", "")
@@ -195,7 +244,7 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
         )
         if guard.stop:
             return {"route": "compose", "reason": guard.reason}
-        return {"route": "propose"}
+        return {"route": "plan_read"}
 
     async def compose(state: GraphState) -> dict[str, Any]:
         answer = (
@@ -257,7 +306,8 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
     builder = StateGraph(GraphState)
     builder.add_node("start", start)
     builder.add_node("load_schema", load_schema)
-    builder.add_node("propose", propose)
+    builder.add_node("plan_read", plan_read)
+    builder.add_node("dispatch_read", dispatch_read)
     builder.add_node("validate", validate)
     builder.add_node("execute", execute)
     builder.add_node("critique", critique)
@@ -270,16 +320,19 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
     builder.add_conditional_edges(
         "start", route_intent, {"load_schema": "load_schema", "plan_writes": "plan_writes"}
     )
-    builder.add_edge("load_schema", "propose")
+    builder.add_edge("load_schema", "plan_read")
     builder.add_conditional_edges(
-        "propose", _route, {"validate": "validate", "compose": "compose"}
+        "plan_read",
+        _route,
+        {"validate": "validate", "dispatch_read": "dispatch_read", "compose": "compose"},
     )
     builder.add_conditional_edges(
         "validate", _route, {"execute": "execute", "critique": "critique"}
     )
     builder.add_edge("execute", "critique")
+    builder.add_edge("dispatch_read", "critique")
     builder.add_conditional_edges(
-        "critique", _route, {"propose": "propose", "compose": "compose"}
+        "critique", _route, {"plan_read": "plan_read", "compose": "compose"}
     )
     builder.add_edge("compose", END)
     builder.add_edge("plan_writes", "dispatch_writes")
@@ -376,6 +429,104 @@ def _authorized_write_ids(authorize: Authorizer | None) -> tuple[str, ...]:
     if authorize is None:
         return ()
     return tuple(cap_id for cap_id in write_capability_ids() if authorize(cap_id)[0])
+
+
+def _authorized_read_ids(authorize: Authorizer | None) -> tuple[str, ...]:
+    """The cataloged STRUCTURED read capability ids this run is entitled to use.
+
+    The Layer A menu for the read planner: only the entitled subset of the
+    ``delegated`` read closed set is shown, and ``dispatch_read`` re-checks each
+    one (Layer B) before invoking it, exactly like the write path.
+    """
+    from ..authz.registry import read_capability_ids
+
+    if authorize is None:
+        return ()
+    return tuple(cap_id for cap_id in read_capability_ids() if authorize(cap_id)[0])
+
+
+def _rows_from_capability_data(data: object) -> tuple[dict[str, Any], ...]:
+    """Coerce a structured read's result into rows for grounding + resolution.
+
+    Reads return the owner's own entitled business data (ids, names) so the
+    planner can resolve a reference (e.g. a customer id) and ground the answer.
+    Accepts a list of records, a single record, or a common envelope
+    (``items``/``rows``/``results``); anything else yields no rows (the summary
+    still carries the outcome).
+    """
+    if isinstance(data, list):
+        return tuple(row for row in data if isinstance(row, dict))
+    if isinstance(data, dict):
+        for key in ("items", "rows", "results", "data"):
+            inner = data.get(key)
+            if isinstance(inner, list):
+                return tuple(row for row in inner if isinstance(row, dict))
+        return (data,)
+    return ()
+
+
+async def _dispatch_read(
+    *,
+    call: CapabilityCall,
+    authorize: Authorizer | None,
+    capability_client: CapabilityClient | None,
+    run_id: str,
+    index: int,
+    emit: EventSink,
+) -> QueryAttempt:
+    """Re-gate (Layer B) and invoke ONE structured read via the Node gateway.
+
+    Mirrors ``_dispatch_writes``: the capability is authorized again against the
+    snapshot regardless of the planner's choice, dispatched with an idempotency
+    key, and the result is recorded as a ``capability`` read attempt so the loop
+    stays bounded and the planner/critique/compose can ground in the rows.
+    """
+    label = f"{call.capability_id} input={json.dumps(call.tool_input, sort_keys=True, default=str)}"
+    step_hash = hash_sql(f"read:{label}")
+    allowed, reason = authorize(call.capability_id) if authorize else (False, "no_authorizer")
+    if not allowed:
+        emit("agent.read.denied", {"capability": call.capability_id, "reason": reason})
+        return QueryAttempt(
+            sql=label, sql_hash=step_hash, row_count=0, truncated=False,
+            error=f"denied:{reason}", source="capability", capability_id=call.capability_id,
+        )
+    if capability_client is None:
+        return QueryAttempt(
+            sql=label, sql_hash=step_hash, row_count=0, truncated=False,
+            error="no_read_channel", source="capability", capability_id=call.capability_id,
+        )
+    idempotency_key = f"agent-read:{run_id}:{call.capability_id}:{index}"
+    emit(
+        "agent.read.started",
+        {"capability": call.capability_id, "input": dict(call.tool_input)},
+    )
+    try:
+        with lf.tool_span(f"capability:{call.capability_id}", capability=call.capability_id):
+            result = await capability_client.execute(
+                run_id=run_id,
+                capability_id=call.capability_id,
+                tool_input=call.tool_input,
+                idempotency_key=idempotency_key,
+            )
+    except CapabilityClientError as exc:
+        code = f"capability_error:{exc.status_code or 'network'}"
+        emit("agent.read.failed", {"capability": call.capability_id, "reason": code})
+        return QueryAttempt(
+            sql=label, sql_hash=step_hash, row_count=0, truncated=False,
+            error=code, source="capability", capability_id=call.capability_id,
+        )
+    rows = _rows_from_capability_data(result.data)
+    emit("agent.read.completed", {"capability": call.capability_id, "rowCount": len(rows)})
+    return QueryAttempt(
+        sql=label,
+        sql_hash=step_hash,
+        row_count=len(rows),
+        truncated=False,
+        error=None,
+        rows=rows,
+        source="capability",
+        capability_id=call.capability_id,
+    )
 
 
 async def _dispatch_writes(

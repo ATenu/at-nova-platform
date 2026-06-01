@@ -50,19 +50,34 @@ def capabilities_for_permissions(permissions: set[str]) -> list[CapabilityDescri
     ]
 
 
-# The high-risk dispatch skill itself is not a concrete write target.
-_DISPATCH_SKILL = "data.act.write"
-
-
 def write_capability_ids() -> tuple[str, ...]:
     """Concrete, cataloged write capabilities the agent may dispatch.
 
-    This is the closed set the write planner can ever be shown (Layer A). It
-    excludes the ``data.act.write`` dispatch skill, so the agent can never mint
-    new write authority; each id is still re-gated independently before dispatch.
+    This is the closed set the write planner can ever be shown (Layer A): the
+    ``delegated`` (agent-internal) write capabilities. It excludes the
+    ``data.act.write`` umbrella (``delegated == False``), so the agent can never
+    mint new write authority; each id is still re-gated independently before
+    dispatch (Layer B) and re-checked by the Node gateway.
     """
     return tuple(
         capability.id
         for capability in CAPABILITY_CATALOG
-        if capability.mode == "write" and capability.id != _DISPATCH_SKILL
+        if capability.mode == "write" and capability.delegated
+    )
+
+
+def read_capability_ids() -> tuple[str, ...]:
+    """Concrete, cataloged STRUCTURED read capabilities the agent may invoke.
+
+    The closed set shown to the read planner (Layer A): the ``delegated``
+    (agent-internal) read capabilities — resolvers (``customers.search``),
+    detail reads (``sales.get``), and scoped reports (``sales.report.customer``).
+    It excludes the ``data.analyse.read`` umbrella and the free-form SQL
+    ``mcp-tool`` capabilities (both ``delegated == False``). Each id is re-gated
+    independently before dispatch (Layer B) and re-checked by the Node gateway.
+    """
+    return tuple(
+        capability.id
+        for capability in CAPABILITY_CATALOG
+        if capability.mode == "read" and capability.delegated
     )

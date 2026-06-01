@@ -9,8 +9,8 @@ so the two language sides can never drift.
 Usage (from repo root):
     npm run build -w @nova/shared
     npm run rbac:export -w @nova/shared
-    python services/orchestrator/scripts/generate_nova_authz.py
-    git diff --exit-code services/orchestrator/src/nova_orchestrator/authz/nova_authz.py
+    python agents/orchestrator/scripts/generate_nova_authz.py
+    git diff --exit-code agents/orchestrator/src/nova_orchestrator/authz/nova_authz.py
 """
 
 from __future__ import annotations
@@ -30,7 +30,9 @@ REGISTRY_PATH = REPO_ROOT / "backend-services" / "packages" / "shared" / "rbac-r
 # parity gate (`--check`) guarantees none of them can drift.
 OUTPUT_PATHS: tuple[Path, ...] = (
     SERVICE_ROOT / "src" / "nova_orchestrator" / "authz" / "nova_authz.py",
-    REPO_ROOT / "agents" / "at-sql-analyser" / "src" / "at_sql_analyser" / "authz" / "nova_authz.py",
+    REPO_ROOT.joinpath(
+        "agents", "at-sql-analyser", "src", "at_sql_analyser", "authz", "nova_authz.py"
+    ),
 )
 
 
@@ -74,6 +76,7 @@ def render(registry: dict[str, Any]) -> str:
     lines.append("    required_permissions: tuple[str, ...]")
     lines.append("    risk: str")
     lines.append("    resource_scoped: bool")
+    lines.append("    delegated: bool")
     lines.append("")
     lines.append("")
     lines.append("CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (")
@@ -86,6 +89,7 @@ def render(registry: dict[str, Any]) -> str:
         lines.append(f"        required_permissions={required},")
         lines.append(f'        risk="{capability["risk"]}",')
         lines.append(f"        resource_scoped={bool(capability['resourceScoped'])},")
+        lines.append(f"        delegated={bool(capability.get('delegated', False))},")
         lines.append("    ),")
     lines.append(")")
     lines.append("")
@@ -110,7 +114,7 @@ def main() -> None:
                 "nova_authz parity check FAILED: a generated Python registry is "
                 "out of date with @nova/shared.\n"
                 "Run: npm run build -w @nova/shared && npm run rbac:export -w @nova/shared "
-                "&& python services/orchestrator/scripts/generate_nova_authz.py",
+                "&& python agents/orchestrator/scripts/generate_nova_authz.py",
                 file=sys.stderr,
             )
             sys.exit(1)

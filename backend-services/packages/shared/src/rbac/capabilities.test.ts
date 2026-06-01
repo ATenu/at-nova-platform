@@ -70,26 +70,58 @@ describe('capability catalog', () => {
     }
   });
 
-  it('gates the data-layer capabilities on read-data only', () => {
-    for (const id of ['data.schema.describe', 'data.query.select', 'data.analyse.read']) {
+  it('gates the free-form SQL mcp-tools on read-data only', () => {
+    // The DB MCP server's own tools stay gated on the coarse read-data permission.
+    for (const id of ['data.schema.describe', 'data.query.select']) {
       const capability = getCapability(id);
       expect(capability).toBeDefined();
       expect(capability!.requiredPermissions).toEqual(['read-data']);
       expect(capability!.risk).toBe('low');
     }
-    // Only read-data holders see the data capabilities (Layer A filtering).
     const dataUser = new Set<Permission>(['read-data']);
     const allowed = capabilitiesForPermissions(dataUser).map((capability) => capability.id);
     expect(allowed).toEqual(
-      expect.arrayContaining([
-        'data.schema.describe',
-        'data.query.select',
-        'data.analyse.read',
-        'data.act.write',
-      ]),
+      expect.arrayContaining(['data.schema.describe', 'data.query.select']),
     );
     const noData = new Set<Permission>(['read-sales']);
     expect(capabilitiesForPermissions(noData).map((c) => c.id)).not.toContain('data.query.select');
+  });
+
+  it('gates the umbrella delegation skills on create-agent-run, not data access', () => {
+    // The two umbrellas are broad delegation ENTRY POINTS, not the authorization
+    // boundary: any agent-using role (which holds create-agent-run) can reach
+    // them, and the agent re-gates every concrete capability per call (Layer B).
+    for (const id of ['data.analyse.read', 'data.act.write']) {
+      const capability = getCapability(id);
+      expect(capability).toBeDefined();
+      expect(capability!.requiredPermissions).toEqual(['create-agent-run']);
+      expect(capability!.delegated ?? false).toBe(false);
+    }
+    // read-data alone does NOT surface the umbrellas (no create-agent-run).
+    const dataOnly = new Set<Permission>(['read-data']);
+    const dataAllowed = capabilitiesForPermissions(dataOnly).map((c) => c.id);
+    expect(dataAllowed).not.toContain('data.analyse.read');
+    expect(dataAllowed).not.toContain('data.act.write');
+    // A run-capable role reaches both umbrellas regardless of domain data perms.
+    const runner = new Set<Permission>(['create-agent-run']);
+    const runnerAllowed = capabilitiesForPermissions(runner).map((c) => c.id);
+    expect(runnerAllowed).toEqual(
+      expect.arrayContaining(['data.analyse.read', 'data.act.write']),
+    );
+  });
+
+  it('marks every concrete business capability as delegated (agent-internal)', () => {
+    // Pure delegator: the orchestrator surfaces ONLY the non-delegated umbrellas.
+    // Concrete business caps are delegated; mcp-tools and umbrellas are not.
+    const umbrellas = new Set(['data.analyse.read', 'data.act.write']);
+    for (const capability of CAPABILITY_CATALOG) {
+      if (capability.kind === 'mcp-tool' || umbrellas.has(capability.id)) {
+        expect(capability.delegated ?? false).toBe(false);
+      } else {
+        expect(capability.kind).toBe('agent-skill');
+        expect(capability.delegated).toBe(true);
+      }
+    }
   });
 
   it('grants the new resolver/read capabilities by their mirrored read permission', () => {
@@ -158,9 +190,10 @@ describe('capability catalog', () => {
     expect(dispatch).toBeDefined();
     expect(dispatch!.mode).toBe('write');
     expect(dispatch!.risk).toBe('high');
-    // It never carries a write permission; concrete writes stay gated on their
-    // own permission + approval, so the agent cannot mint new write authority.
-    expect(dispatch!.requiredPermissions).toEqual(['read-data']);
+    // It never carries a write permission; it is only a delegation entry point
+    // gated on the universal create-agent-run, while concrete writes stay gated on
+    // their own permission + approval, so the agent cannot mint new write authority.
+    expect(dispatch!.requiredPermissions).toEqual(['create-agent-run']);
     expect(capabilityRequiresApproval(dispatch!)).toBe(true);
   });
 });

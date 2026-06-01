@@ -1,10 +1,11 @@
-"""Client for the internal MCP tool gateway hosted by the Node control plane.
+"""Client for the orchestrator's control-plane callbacks into the Node API.
 
-The worker never touches the business ``nova`` database. To read prompts, run
-capabilities, and persist the final assistant message it calls back into the
-Node API with an audience-restricted (``nova-mcp-*``) service token. The Node
-gateway independently re-enforces authorization against the entitlement
-snapshot, so a compromised worker cannot widen access.
+The worker never touches the business ``nova`` database, and as a pure delegator
+it never executes a business capability directly: capability execution belongs
+to the A2A agents. This client is therefore limited to the run control plane —
+reading the run prompt and persisting the final assistant message — over an
+audience-restricted (``nova-mcp-*``) service token. The Node side independently
+re-enforces authorization, so a compromised worker cannot widen access.
 """
 
 from __future__ import annotations
@@ -41,14 +42,6 @@ class ToolGatewayClient:
         url = f"{self._base}/internal/agent-runs/{run_id}/prompt"
         data = self._request("GET", url)
         return str(data.get("message", ""))
-
-    def execute_capability(
-        self, run_id: str, capability_id: str, tool_input: dict[str, Any]
-    ) -> dict[str, Any]:
-        url = f"{self._base}/internal/agent-runs/{run_id}/tool-calls"
-        return self._request(
-            "POST", url, json={"capabilityId": capability_id, "input": tool_input}
-        )
 
     def finalize(self, run_id: str, text: str, links: list[dict[str, str]]) -> dict[str, Any]:
         url = f"{self._base}/internal/agent-runs/{run_id}/finalize"

@@ -106,7 +106,8 @@
         "read-customers"
       ],
       "risk": "low",
-      "resourceScoped": true
+      "resourceScoped": true,
+      "delegated": true
     },
     {
       "id": "sales.products.forCustomer",
@@ -117,7 +118,8 @@
         "read-customers"
       ],
       "risk": "low",
-      "resourceScoped": true
+      "resourceScoped": true,
+      "delegated": true
     },
     {
       "id": "sales.create",
@@ -127,7 +129,8 @@
         "write-sales"
       ],
       "risk": "low",
-      "resourceScoped": false
+      "resourceScoped": false,
+      "delegated": true
     },
     {
       "id": "issues.list.pendingForCustomer",
@@ -138,7 +141,8 @@
         "read-customers"
       ],
       "risk": "low",
-      "resourceScoped": true
+      "resourceScoped": true,
+      "delegated": true
     },
     {
       "id": "actions.next",
@@ -148,7 +152,8 @@
         "read-actions"
       ],
       "risk": "low",
-      "resourceScoped": false
+      "resourceScoped": false,
+      "delegated": true
     },
     {
       "id": "actions.markCompleted",
@@ -158,7 +163,8 @@
         "write-actions"
       ],
       "risk": "low",
-      "resourceScoped": true
+      "resourceScoped": true,
+      "delegated": true
     },
     {
       "id": "issues.create",
@@ -168,7 +174,8 @@
         "create-issues"
       ],
       "risk": "low",
-      "resourceScoped": false
+      "resourceScoped": false,
+      "delegated": true
     },
     {
       "id": "sop.read",
@@ -178,7 +185,8 @@
         "read-sop"
       ],
       "risk": "low",
-      "resourceScoped": false
+      "resourceScoped": false,
+      "delegated": true
     },
     {
       "id": "customers.search",
@@ -188,7 +196,8 @@
         "read-customers"
       ],
       "risk": "low",
-      "resourceScoped": false
+      "resourceScoped": false,
+      "delegated": true
     },
     {
       "id": "customers.get",
@@ -198,7 +207,8 @@
         "read-customers"
       ],
       "risk": "low",
-      "resourceScoped": true
+      "resourceScoped": true,
+      "delegated": true
     },
     {
       "id": "products.search",
@@ -208,7 +218,8 @@
         "read-sales"
       ],
       "risk": "low",
-      "resourceScoped": false
+      "resourceScoped": false,
+      "delegated": true
     },
     {
       "id": "products.get",
@@ -218,7 +229,8 @@
         "read-sales"
       ],
       "risk": "low",
-      "resourceScoped": true
+      "resourceScoped": true,
+      "delegated": true
     },
     {
       "id": "sales.list",
@@ -228,7 +240,8 @@
         "read-sales"
       ],
       "risk": "low",
-      "resourceScoped": false
+      "resourceScoped": false,
+      "delegated": true
     },
     {
       "id": "sales.get",
@@ -238,7 +251,8 @@
         "read-sales"
       ],
       "risk": "low",
-      "resourceScoped": true
+      "resourceScoped": true,
+      "delegated": true
     },
     {
       "id": "issues.list",
@@ -248,7 +262,8 @@
         "read-issues"
       ],
       "risk": "low",
-      "resourceScoped": false
+      "resourceScoped": false,
+      "delegated": true
     },
     {
       "id": "issues.get",
@@ -258,7 +273,8 @@
         "read-issues"
       ],
       "risk": "low",
-      "resourceScoped": true
+      "resourceScoped": true,
+      "delegated": true
     },
     {
       "id": "actions.list",
@@ -268,7 +284,8 @@
         "read-actions"
       ],
       "risk": "low",
-      "resourceScoped": false
+      "resourceScoped": false,
+      "delegated": true
     },
     {
       "id": "actions.get",
@@ -278,7 +295,8 @@
         "read-actions"
       ],
       "risk": "low",
-      "resourceScoped": true
+      "resourceScoped": true,
+      "delegated": true
     },
     {
       "id": "actions.addComment",
@@ -288,7 +306,8 @@
         "write-actions"
       ],
       "risk": "low",
-      "resourceScoped": true
+      "resourceScoped": true,
+      "delegated": true
     },
     {
       "id": "actions.update",
@@ -298,7 +317,8 @@
         "write-actions"
       ],
       "risk": "low",
-      "resourceScoped": true
+      "resourceScoped": true,
+      "delegated": true
     },
     {
       "id": "issues.update",
@@ -308,7 +328,8 @@
         "write-issues"
       ],
       "risk": "low",
-      "resourceScoped": true
+      "resourceScoped": true,
+      "delegated": true
     },
     {
       "id": "sop.create",
@@ -318,7 +339,8 @@
         "write-sop"
       ],
       "risk": "low",
-      "resourceScoped": false
+      "resourceScoped": false,
+      "delegated": true
     },
     {
       "id": "sop.update",
@@ -328,7 +350,8 @@
         "write-sop"
       ],
       "risk": "low",
-      "resourceScoped": true
+      "resourceScoped": true,
+      "delegated": true
     },
     {
       "id": "sop.addVersion",
@@ -338,7 +361,8 @@
         "write-sop"
       ],
       "risk": "low",
-      "resourceScoped": true
+      "resourceScoped": true,
+      "delegated": true
     },
     {
       "id": "data.schema.describe",
@@ -348,7 +372,8 @@
         "read-data"
       ],
       "risk": "low",
-      "resourceScoped": false
+      "resourceScoped": false,
+      "delegated": false
     },
     {
       "id": "data.query.select",
@@ -358,27 +383,30 @@
         "read-data"
       ],
       "risk": "low",
-      "resourceScoped": true
+      "resourceScoped": true,
+      "delegated": false
     },
     {
       "id": "data.analyse.read",
       "kind": "agent-skill",
       "mode": "read",
       "requiredPermissions": [
-        "read-data"
+        "create-agent-run"
       ],
       "risk": "low",
-      "resourceScoped": true
+      "resourceScoped": true,
+      "delegated": false
     },
     {
       "id": "data.act.write",
       "kind": "agent-skill",
       "mode": "write",
       "requiredPermissions": [
-        "read-data"
+        "create-agent-run"
       ],
       "risk": "high",
-      "resourceScoped": true
+      "resourceScoped": true,
+      "delegated": false
     }
   ]
 }

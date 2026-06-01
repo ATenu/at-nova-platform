@@ -59,7 +59,7 @@ regardless of how the plan was produced.
 cd backend-services && npm run -w @nova/shared rbac:export
 
 # 2. Regenerate the Python mirror
-cd services/orchestrator && python scripts/generate_nova_authz.py
+cd agents/orchestrator && python scripts/generate_nova_authz.py
 ```
 
 CI must run both steps and fail on any diff so the two sides cannot drift.

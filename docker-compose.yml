@@ -359,6 +359,15 @@ services:
       # Authoritative WRITE path: the agent invokes cataloged capabilities via the
       # Node tool gateway with a token minted for the gateway's audience.
       CAPABILITY_AUDIENCE_SCOPE: ${CAPABILITY_AUDIENCE_SCOPE:-nova-mcp-sales}
+      # Native A2A self-registration: publish this agent's card to the
+      # orchestrator on startup + heartbeat so it is discovered without static
+      # config (discovery only; authorization stays with the snapshot + Layer B
+      # gate). Mints a nova-orchestrator-audience token (realm has the matching
+      # audience mapper on this agent client). Fail-soft: never blocks serving.
+      ORCHESTRATOR_INTERNAL_URL: ${ORCHESTRATOR_INTERNAL_URL:-http://orchestrator:8001}
+      ORCHESTRATOR_AUDIENCE_SCOPE: ${ORCHESTRATOR_AUDIENCE_SCOPE:-nova-orchestrator}
+      A2A_REGISTRATION_ENABLED: ${A2A_REGISTRATION_ENABLED:-true}
+      A2A_REGISTRATION_HEARTBEAT_SECONDS: ${A2A_REGISTRATION_HEARTBEAT_SECONDS:-60}
       NOVA_API_INTERNAL_URL: ${NOVA_API_INTERNAL_URL:-http://api:3000}
       DB_MCP_URL: ${DB_MCP_URL:-http://db-mcp-server:8002}
       # LLM powering autonomous planning/reasoning/compose (OpenAI).
@@ -390,7 +399,7 @@ services:
   # Celery task by ID only.
   orchestrator:
     build:
-      context: ./services/orchestrator
+      context: ./agents/orchestrator
       dockerfile: Dockerfile
     container_name: nova-orchestrator
     depends_on:
@@ -410,6 +419,13 @@ services:
       KEYCLOAK_ISSUER_URL: ${KEYCLOAK_ISSUER_URL:-http://localhost:8080/realms/nova}
       KEYCLOAK_JWKS_URI: ${KEYCLOAK_JWKS_URI:-http://keycloak:8080/realms/nova/protocol/openid-connect/certs}
       ORCHESTRATOR_AUDIENCE: ${ORCHESTRATOR_AUDIENCE:-nova-orchestrator}
+      # Native A2A self-registration endpoint: accept a registration only from a
+      # service token whose azp is one of these agent clients (default deny).
+      # Add a new agent's Keycloak client id here to let it self-register.
+      AGENT_REGISTRATION_AUTHORIZED_PARTIES: ${AGENT_REGISTRATION_AUTHORIZED_PARTIES:-nova-agent-sql-analyst}
+      # Optional SSRF allowlist for registering agents' base_url hosts (empty =
+      # http/https scheme check only).
+      AGENT_REGISTRATION_ALLOWED_HOSTS: ${AGENT_REGISTRATION_ALLOWED_HOSTS:-}
     ports:
       - '8001:8001'
 
@@ -419,7 +435,7 @@ services:
   # business `nova` DB.
   celery-worker:
     build:
-      context: ./services/orchestrator
+      context: ./agents/orchestrator
       dockerfile: Dockerfile
     container_name: nova-celery-worker
     depends_on:
@@ -467,6 +483,12 @@ services:
       # network with an audience-restricted (nova-agent-sql-analyst) token.
       SQL_ANALYST_AGENT_URL: ${SQL_ANALYST_AGENT_URL:-http://at-sql-analyser:8003}
       SQL_ANALYST_AGENT_AUDIENCE: ${SQL_ANALYST_AGENT_AUDIENCE:-nova-agent-sql-analyst}
+      # Native A2A discovery: the worker routes to agents from the live
+      # self-registration registry. Only registrations refreshed within this TTL
+      # are considered live. When the registry is empty, fall back to the static
+      # SQL-analyst seed above so existing deployments keep working during rollout.
+      A2A_REGISTRY_TTL_SECONDS: ${A2A_REGISTRY_TTL_SECONDS:-120}
+      A2A_REGISTRY_SEED_SQL_ANALYST: ${A2A_REGISTRY_SEED_SQL_ANALYST:-true}
       # Outbound A2A wall-clock budget. MUST exceed the agent's own
       # AGENT_TOTAL_TIMEOUT_S (default 120) plus one in-flight LLM call, or the
       # worker aborts a still-working agent and records a false failure.
@@ -495,7 +517,7 @@ services:
   # until success or dead-letter. Never connects to the business `nova` DB.
   celery-webhook:
     build:
-      context: ./services/orchestrator
+      context: ./agents/orchestrator
       dockerfile: Dockerfile
     container_name: nova-celery-webhook
     depends_on:

@@ -69,13 +69,16 @@ def tools_for_menu(menu: Sequence[MenuItem], *, include_finish: bool) -> list[di
     """Build OpenAI-compatible tool definitions from the Layer A menu."""
     tools: list[dict[str, Any]] = []
     for item in menu:
+        # Description comes from the (card-aware) menu item so a self-registered
+        # agent's trusted card text reaches the model; the parameter schema still
+        # comes from the curated/synthesised guide (Layer B re-validates shape).
         guide = spec_for(item.capability_id)
         tools.append(
             {
                 "type": "function",
                 "function": {
                     "name": item.tool_name,
-                    "description": f"{guide.summary} When to use: {guide.when_to_use}",
+                    "description": f"{item.summary} When to use: {item.when_to_use}",
                     "parameters": guide.input_schema,
                 },
             }

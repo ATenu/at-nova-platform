@@ -19,9 +19,19 @@ def test_denies_when_not_in_allowlist() -> None:
     assert decision.reason == "not_in_allowlist"
 
 
-def test_denies_when_roles_lack_permission() -> None:
+def test_read_umbrella_is_a_broad_entry_point() -> None:
+    # The umbrella is gated only on the universal create-agent-run permission, so
+    # any agent-using role may invoke it; real authorization is per concrete cap.
     snap = make_snapshot(roles=("sales-user",), allowlist=("data.analyse.read",))
     decision = authorize(snap, "data.analyse.read")
+    assert decision.allowed
+
+
+def test_denies_concrete_read_when_roles_lack_permission() -> None:
+    # Authorization is enforced per concrete capability: ops-compliance lacks
+    # read-customers, so the structured customer read is denied (Layer B).
+    snap = make_snapshot(roles=("ops-compliance",), allowlist=("customers.search",))
+    decision = authorize(snap, "customers.search")
     assert not decision.allowed
     assert decision.reason == "missing_permission"
 
