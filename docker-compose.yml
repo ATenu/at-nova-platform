@@ -479,6 +479,13 @@ services:
       # which re-enforces the entitlement snapshot.
       NOVA_API_INTERNAL_URL: ${NOVA_API_INTERNAL_URL:-http://api:3000}
       MAX_RUN_STEPS: ${MAX_RUN_STEPS:-8}
+      # DEV/TEST-ONLY: when true, the worker stands in for the human approval of
+      # the high-risk `data.act.write` umbrella so agent writes execute end-to-end
+      # (used by the agentic-quality harness to prove writes complete). Default
+      # OFF (fail closed); NEVER set this in production. Every use is logged and
+      # written to the immutable audit trail; it relaxes no other gate (the
+      # concrete write capability still needs its own domain permission).
+      AGENT_WRITE_AUTO_APPROVE: ${AGENT_WRITE_AUTO_APPROVE:-false}
       # A2A delegation: the worker tasks the SQL analyst agent over the internal
       # network with an audience-restricted (nova-agent-sql-analyst) token.
       SQL_ANALYST_AGENT_URL: ${SQL_ANALYST_AGENT_URL:-http://at-sql-analyser:8003}

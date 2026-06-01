@@ -41,3 +41,51 @@ export function accessibleViews(permissions: ReadonlySet<Permission>): string[] 
     permissions.has(MCP_READ_VIEW_PERMISSIONS[view] as Permission),
   );
 }
+
+/**
+ * Per-domain WRITE permission map — the mutate-side analogue of
+ * `MCP_READ_VIEW_PERMISSIONS`, keyed by the SAME curated domain names.
+ *
+ * IMPORTANT — this is NOT a SQL surface. There is deliberately no `mcp_write`
+ * schema: the agent never issues write SQL. Every agent write is a typed,
+ * cataloged capability (`capabilities.ts`, e.g. `issues.update`, `sop.update`,
+ * `actions.addComment`, `sales.create`) executed through the Node tool gateway,
+ * which re-checks that capability's `requiredPermissions` against the run's
+ * entitlement snapshot. This map therefore expresses, per business domain, the
+ * domain permission a caller must hold to mutate it — mirroring the same
+ * permission those write capabilities already require (a contract test in
+ * `data-views.test.ts` keeps the two in lock-step). It is the symmetric,
+ * single-source answer to "which domains may this permission set write?" used by
+ * entitlement reasoning and quality tooling; the authoritative runtime gate
+ * stays the capability catalog + tool gateway.
+ *
+ * Only domains with an actual cataloged agent-write capability are listed
+ * (default deny): `products` has no write permission and `customers`/`users`
+ * have no agent-write capability, so none of them appear here.
+ */
+export const MCP_WRITE_VIEW_PERMISSIONS: Readonly<Record<string, Permission>> = {
+  sales: 'write-sales',
+  products_sold: 'write-sales',
+  customer_issues: 'write-issues',
+  issue_actions: 'write-actions',
+  my_assigned_actions: 'write-actions',
+  sops: 'write-sop',
+  sop_details: 'write-sop',
+} as const;
+
+/** Resolve the write permission a domain requires, or `undefined` if not writable. */
+export function permissionForWriteView(view: string): Permission | undefined {
+  return MCP_WRITE_VIEW_PERMISSIONS[view];
+}
+
+/**
+ * The subset of curated domain names the permission set may WRITE. The mutate-side
+ * analogue of `accessibleViews`: used by entitlement reasoning / quality tooling
+ * to determine which domains a role can mutate via the agent's cataloged write
+ * capabilities (default deny).
+ */
+export function writableViews(permissions: ReadonlySet<Permission>): string[] {
+  return Object.keys(MCP_WRITE_VIEW_PERMISSIONS).filter((view) =>
+    permissions.has(MCP_WRITE_VIEW_PERMISSIONS[view] as Permission),
+  );
+}

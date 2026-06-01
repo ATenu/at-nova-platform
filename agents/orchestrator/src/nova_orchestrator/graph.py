@@ -26,6 +26,7 @@ Security invariants are preserved exactly and are NOT delegated to the LLM:
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -60,6 +61,8 @@ from .tool_gateway import ToolGatewayClient, ToolGatewayError
 WORKER_ACTOR = "nova-celery-worker"
 TERMINAL_STATUSES = frozenset({"completed", "failed", "canceled", "expired"})
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class StepCall:
@@ -89,6 +92,9 @@ class OrchestratorDeps:
     # Optional: ``None`` keeps the orchestrator stateless/single-turn as before.
     state_store: AgentStateStore | None = None
     history_read_limit: int = 20
+    # DEV/TEST-ONLY: treat high-risk writes as approved (see OrchestratorConfig).
+    # Default False ⇒ production behaviour is unchanged (fail closed).
+    auto_approve_writes: bool = False
 
 
 def _now() -> datetime:
@@ -99,13 +105,29 @@ def _uuid() -> str:
     return str(uuid.uuid4())
 
 
-def _approval_granted(run_id: str, capability_id: str) -> bool:
-    """Whether a human approval is recorded for this high-risk capability.
+def _approval_granted(deps: OrchestratorDeps, capability_id: str) -> bool:
+    """Whether a human approval is recorded/granted for this high-risk capability.
 
     Fails closed: a high-risk capability is denied until an approval is recorded
     for the run (recording + resume is a control-plane concern owned by the API).
     The agent independently re-checks.
+
+    The ONLY exception is the dev/test-only ``auto_approve_writes`` escape hatch
+    (``AGENT_WRITE_AUTO_APPROVE``): when explicitly enabled on a non-production
+    stack it stands in for the human approval so agent writes can be exercised
+    end-to-end. It is loudly logged here and additionally audited at the call
+    site; it never relaxes any other gate (the concrete write capability still
+    needs its own domain permission, re-checked by the Node tool gateway).
     """
+    if deps.auto_approve_writes:
+        logger.warning(
+            "AGENT_WRITE_AUTO_APPROVE is ON: standing in for human approval of "
+            "high-risk capability %s on run %s. This is a DEV/TEST-ONLY switch and "
+            "MUST NOT be enabled in production.",
+            capability_id,
+            deps.run_id,
+        )
+        return True
     return False
 
 
@@ -439,6 +461,7 @@ def run_graph(
     registry: AgentRegistry | None = None,
     state_store: AgentStateStore | None = None,
     history_read_limit: int = 20,
+    auto_approve_writes: bool = False,
 ) -> str:
     """Drive the run to a terminal status via the LangGraph DAG."""
     deps = OrchestratorDeps(
@@ -452,6 +475,7 @@ def run_graph(
         registry=registry,
         state_store=state_store,
         history_read_limit=history_read_limit,
+        auto_approve_writes=auto_approve_writes,
     )
     compiled = build_graph(deps)
     recursion_limit = max_steps * 4 + 8
@@ -506,7 +530,15 @@ def _run_agent_step(
     intent = "write" if capability is not None and capability.mode == "write" else "read"
     agent = deps.registry.agent_for_skill(capability_id) if deps.registry is not None else None
     required_permission = _required_permission_for(capability_id)
-    approval_granted = _approval_granted(run_id, capability_id)
+    approval_granted = _approval_granted(deps, capability_id)
+    # Did the dev/test escape hatch actually stand in for a human approval for a
+    # high-risk capability? Used purely to audit the override loudly below.
+    auto_approved = (
+        approval_granted
+        and deps.auto_approve_writes
+        and capability is not None
+        and getattr(capability, "risk", "low") == "high"
+    )
 
     with deps.session_factory() as session:
         run = _lock_and_load(session, run_id)
@@ -567,6 +599,33 @@ def _run_agent_step(
             session.commit()
             return StepResult(
                 Observation(capability_id, "agent", "failed", reason="no_agent_available")
+            )
+
+        # Loudly audit the dev/test auto-approval override: a high-risk write was
+        # allowed WITHOUT a human approval because AGENT_WRITE_AUTO_APPROVE is on.
+        # security-visibility only (never the browser SSE) + immutable audit row.
+        if auto_approved:
+            emit_event(
+                session,
+                run,
+                event_type="authz.allowed",
+                payload={
+                    "capability": capability_id,
+                    "decision": "allow",
+                    "reasonCode": "auto_approved_dev_test",
+                    "actor": WORKER_ACTOR,
+                },
+                visibility="security",
+            )
+            record_audit(
+                session,
+                run_id=run.id,
+                owner_subject=run.owner_subject,
+                actor=WORKER_ACTOR,
+                action="agent.invoke",
+                capability=capability_id,
+                decision="allow",
+                reason="auto_approved_dev_test",
             )
 
         # Project the orchestrator's Layer-B allow into the security audit

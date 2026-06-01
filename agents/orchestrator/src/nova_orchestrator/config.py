@@ -76,6 +76,14 @@ class OrchestratorConfig:
     # audience via protocol mappers on the worker client and azp pinning guards
     # each resource server (the dev realm's mode).
     worker_request_audience_scopes: bool
+    # DEV/TEST-ONLY escape hatch. When true, the worker treats the high-risk
+    # `data.act.write` umbrella as if a human approval were recorded, so agent
+    # writes execute end-to-end WITHOUT a human in the loop. Default OFF (fail
+    # closed); production deployments must never set it. Every use is loudly
+    # logged and written to the immutable audit trail. It does NOT bypass any
+    # other gate: the concrete write capability still requires its own domain
+    # permission (Layer B) and the Node tool gateway re-checks it.
+    agent_write_auto_approve: bool
     run_soft_time_limit_s: int
     run_time_limit_s: int
     # Internal MCP tool gateway (Node control plane) the worker calls back into.
@@ -149,6 +157,9 @@ def load_config() -> OrchestratorConfig:
         # Secret is only required when the worker actually mints per-hop tokens.
         worker_client_secret=_optional("WORKER_CLIENT_SECRET", ""),
         worker_request_audience_scopes=_bool("WORKER_REQUEST_AUDIENCE_SCOPES", False),
+        # Default OFF: high-risk agent writes stay default-deny unless explicitly
+        # opted in for a non-production test stack.
+        agent_write_auto_approve=_bool("AGENT_WRITE_AUTO_APPROVE", False),
         run_soft_time_limit_s=_int("RUN_SOFT_TIME_LIMIT_S", 6900),
         run_time_limit_s=_int("RUN_TIME_LIMIT_S", 7200),
         nova_api_internal_url=_optional("NOVA_API_INTERNAL_URL", "http://nova-api:3000"),

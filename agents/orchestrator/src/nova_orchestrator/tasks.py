@@ -64,6 +64,7 @@ def process_run(
     reasoner: Reasoner | None = None,
     state_store_factory: Callable[[str], AgentStateStore | None] | None = None,
     history_read_limit: int = 20,
+    auto_approve_writes: bool = False,
 ) -> str:
     """Process a run to a terminal status and return that status.
 
@@ -178,6 +179,7 @@ def process_run(
         registry=registry,
         state_store=state_store,
         history_read_limit=history_read_limit,
+        auto_approve_writes=auto_approve_writes,
     )
 
 
@@ -269,4 +271,5 @@ def run_orchestration(
         reasoner=reasoner,
         state_store_factory=state_store_factory,
         history_read_limit=config.agent_history_read_limit,
+        auto_approve_writes=config.agent_write_auto_approve,
     )

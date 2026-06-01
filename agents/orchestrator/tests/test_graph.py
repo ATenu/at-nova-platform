@@ -24,6 +24,7 @@ from nova_orchestrator.graph import (
     StepResult,
     _after_dispatch,
     _agent_dedupe_key,
+    _approval_granted,
     _build_menu,
     _call_signature,
     _emit_agent_event,
@@ -287,7 +288,12 @@ def _entitlement(allowlist: set[str]) -> EntitlementSnapshot:
     )
 
 
-def _deps(store: AgentStateStore | None, snapshot: EntitlementSnapshot) -> OrchestratorDeps:
+def _deps(
+    store: AgentStateStore | None,
+    snapshot: EntitlementSnapshot,
+    *,
+    auto_approve_writes: bool = False,
+) -> OrchestratorDeps:
     return OrchestratorDeps(
         reasoner=FakeReasoner(),
         session_factory=None,  # not exercised by the history helpers
@@ -297,7 +303,21 @@ def _deps(store: AgentStateStore | None, snapshot: EntitlementSnapshot) -> Orche
         max_steps=8,
         state_store=store,
         history_read_limit=20,
+        auto_approve_writes=auto_approve_writes,
     )
+
+
+def test_approval_fails_closed_by_default() -> None:
+    # No human approval and the dev/test escape hatch OFF ⇒ high-risk writes denied.
+    deps = _deps(None, _entitlement({"data.act.write"}))
+    assert _approval_granted(deps, "data.act.write") is False
+
+
+def test_auto_approve_switch_stands_in_for_human_approval() -> None:
+    # DEV/TEST-ONLY: with the explicit opt-in, the worker treats the high-risk
+    # umbrella as approved so agent writes can execute end-to-end.
+    deps = _deps(None, _entitlement({"data.act.write"}), auto_approve_writes=True)
+    assert _approval_granted(deps, "data.act.write") is True
 
 
 def test_load_history_renders_prior_turns() -> None:
