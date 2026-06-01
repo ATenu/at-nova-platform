@@ -18,13 +18,24 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
 from a2a.client.middleware import ClientCallContext, ClientCallInterceptor
-from a2a.types import AgentCard, DataPart, Message, Part, Role, Task, TaskState, TextPart
+from a2a.types import (
+    AgentCard,
+    DataPart,
+    Message,
+    Part,
+    Role,
+    Task,
+    TaskState,
+    TaskStatusUpdateEvent,
+    TextPart,
+)
 from a2a.utils import get_data_parts, get_text_parts
 
 from .tokens import ServiceTokenClient
@@ -60,6 +71,14 @@ class AgentClientError(RuntimeError):
 class AgentEvent:
     type: str
     payload: dict[str, Any] = field(default_factory=dict)
+    # Monotonic per-task ordinal the agent assigns to each sub-step. Lets the
+    # worker compute a deterministic dedupe key so a live-streamed frame and its
+    # terminal-artifact twin (or a reconnect replay) never double-write.
+    agent_seq: int | None = None
+
+
+# Live per-frame callback the worker passes in to persist sub-events mid-run.
+AgentEventCallback = Callable[[AgentEvent], None]
 
 
 @dataclass(frozen=True)
@@ -116,6 +135,7 @@ class AgentClient:
         conversation_id: str = "",
         langfuse_trace_id: str | None = None,
         langfuse_parent_observation_id: str | None = None,
+        on_event: AgentEventCallback | None = None,
     ) -> AgentTaskResult:
         token = self._tokens.get_token(audience_scope)
         payload = {
@@ -139,7 +159,7 @@ class AgentClient:
         if langfuse_parent_observation_id:
             payload["langfuseParentObservationId"] = langfuse_parent_observation_id
         try:
-            return asyncio.run(self._send(base_url, token, goal, payload))
+            return asyncio.run(self._send(base_url, token, goal, payload, on_event))
         except AgentClientError as exc:
             if exc.status_code == 401:
                 self._tokens.invalidate(audience_scope)
@@ -154,14 +174,28 @@ class AgentClient:
             ) from exc
 
     async def _send(
-        self, base_url: str, token: str, goal: str, payload: dict[str, Any]
+        self,
+        base_url: str,
+        token: str,
+        goal: str,
+        payload: dict[str, Any],
+        on_event: AgentEventCallback | None = None,
     ) -> AgentTaskResult:
         async with httpx.AsyncClient(timeout=self._timeout) as http:
             resolver = A2ACardResolver(httpx_client=http, base_url=base_url.rstrip("/"))
             card = await resolver.get_agent_card()
+            # Feature-detect from the resolved card: stream only when a callback
+            # is provided AND the agent advertises streaming. Otherwise fall back
+            # to the batch path (intermediate sub-steps arrive in the terminal
+            # artifact, exactly as before).
+            streaming = bool(
+                on_event is not None
+                and card.capabilities is not None
+                and card.capabilities.streaming
+            )
             config = ClientConfig(
                 httpx_client=http,
-                streaming=False,
+                streaming=streaming,
                 accepted_output_modes=["text/plain", "application/json"],
             )
             client = ClientFactory(config).create(
@@ -175,14 +209,35 @@ class AgentClient:
                     Part(root=TextPart(text=goal)),
                 ],
             )
-            final_task = None
+            final_task: Task | None = None
             final_message: Message | None = None
             async for event in client.send_message(message):
                 if isinstance(event, tuple):
-                    final_task = event[0]
+                    task, update = event
+                    final_task = task
+                    if streaming and on_event is not None:
+                        await self._forward_frame(update, on_event)
                 else:
                     final_message = event
             return _parse_result(final_task, final_message)
+
+    @staticmethod
+    async def _forward_frame(
+        update: object, on_event: AgentEventCallback
+    ) -> None:
+        """Persist one non-final streamed sub-event via the worker's callback.
+
+        The frame is UNTRUSTED: only a well-formed ``metadata.novaEvent`` is read
+        (same discipline as ``_coerce_events``); anything else is dropped. The DB
+        write is sync, so it runs in a thread to avoid blocking the event loop.
+        """
+        if not isinstance(update, TaskStatusUpdateEvent) or update.final:
+            return
+        metadata = update.metadata or {}
+        nova = metadata.get("novaEvent") if isinstance(metadata, dict) else None
+        agent_event = _coerce_stream_event(nova)
+        if agent_event is not None:
+            await asyncio.to_thread(on_event, agent_event)
 
 
 def _parse_result(task: Task | None, message: Message | None) -> AgentTaskResult:
@@ -217,25 +272,43 @@ def _parse_result(task: Task | None, message: Message | None) -> AgentTaskResult
     raise AgentClientError("agent returned no task or message")
 
 
+def _coerce_stream_event(value: object) -> AgentEvent | None:
+    """Coerce ONE untrusted ``metadata.novaEvent`` envelope into an AgentEvent.
+
+    Only ``{type: str, payload: dict, agentSeq?: int}`` is accepted; the worker
+    redacts + bounds the payload before it becomes a persisted event. Anything
+    malformed is dropped (never trusted verbatim, never authorizes).
+    """
+    if not isinstance(value, dict):
+        return None
+    event_type = value.get("type")
+    if not isinstance(event_type, str) or not event_type:
+        return None
+    payload = value.get("payload")
+    agent_seq = value.get("agentSeq")
+    # bool is an int subclass; reject it so a stray `true` never becomes ordinal 1.
+    ordinal = agent_seq if isinstance(agent_seq, int) and not isinstance(agent_seq, bool) else None
+    return AgentEvent(
+        type=event_type,
+        payload=payload if isinstance(payload, dict) else {},
+        agent_seq=ordinal,
+    )
+
+
 def _coerce_events(value: object) -> tuple[AgentEvent, ...]:
     """Read the agent's typed progress events from its result DataPart.
 
-    Untrusted input: only ``{type: str, payload: dict}`` entries are kept; the
-    payload is preserved (the orchestrator redacts + bounds it before it becomes
-    a user event). Anything malformed is dropped, never trusted verbatim.
+    Untrusted input: only ``{type: str, payload: dict}`` entries are kept (with
+    an optional ``agentSeq`` ordinal used for dedupe); the payload is preserved
+    (the orchestrator redacts + bounds it before it becomes a persisted event).
+    Anything malformed is dropped, never trusted verbatim.
     """
     events: list[AgentEvent] = []
     if isinstance(value, list):
         for item in value:
-            if not isinstance(item, dict):
-                continue
-            event_type = item.get("type")
-            if not isinstance(event_type, str) or not event_type:
-                continue
-            payload = item.get("payload")
-            events.append(
-                AgentEvent(type=event_type, payload=payload if isinstance(payload, dict) else {})
-            )
+            coerced = _coerce_stream_event(item)
+            if coerced is not None:
+                events.append(coerced)
     return tuple(events)
 
 

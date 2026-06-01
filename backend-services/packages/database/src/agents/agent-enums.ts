@@ -55,16 +55,35 @@ export const AGENT_EVENT_TYPES = [
   'agent.query.started',
   'agent.query.completed',
   'agent.query.rejected',
+  // Structured (cataloged) read capability sub-steps dispatched via the Node
+  // gateway (e.g. customers.search -> sales.report.customer). Carry the
+  // capability id and a row count, never raw rows.
+  'agent.read.started',
+  'agent.read.completed',
+  'agent.read.failed',
+  'agent.read.denied',
   'agent.write.started',
   'agent.write.completed',
   'agent.write.failed',
   'agent.write.denied',
+  // Generic LangGraph node-execution markers (agent-internal; visibility
+  // `internal`). Bounded metadata only: node name, iteration, duration,
+  // outcome — never raw state, prompt text, SQL, or rows.
+  'agent.node.started',
+  'agent.node.completed',
   'agent.completed',
   'approval.required',
   'tool.call.started',
   'tool.call.completed',
   'tool.call.failed',
+  // RBAC decision projections of the immutable `agent_audit_log` trail. Both
+  // allow and deny are evented at `security` visibility (webhook audit channel
+  // only, never the browser SSE stream). `agent.authz.*` is the agent-side
+  // Layer-B re-gate; `authz.*` is the orchestrator gate.
+  'authz.allowed',
   'authz.denied',
+  'agent.authz.allowed',
+  'agent.authz.denied',
   'artifact.created',
   'webhook.delivery.started',
   'webhook.delivery.succeeded',

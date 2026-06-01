@@ -1,9 +1,21 @@
 """Outbox writers: progress events, audit rows, and run-state transitions.
 
 Events and the state change they describe are written in the same DB
-transaction (transactional outbox) so nothing is lost on a worker crash. Only
-``user``-visibility events are ever streamed to the end user; ``internal`` and
-``security`` events (e.g. ``authz.denied``) never leave the backend.
+transaction (transactional outbox) so nothing is lost on a worker crash.
+
+Two channels are fed from this one ordered ledger:
+
+- the **browser SSE** stream is ``user``-only (the API filters ``visibility =
+  'user'``); ``internal``/``security`` events (e.g. ``authz.*``) never leave the
+  backend over SSE;
+- the **owner webhook** is an authenticated server-to-server audit channel that
+  may additionally receive ``internal`` + ``security`` events, scoped by the
+  owner's :class:`WebhookAuthConfig` (``visibility_scope`` /
+  ``event_type_allowlist``). The default scope is the full firehose.
+
+Agent sub-events carry a deterministic ``dedupe_key`` so a live streamed frame
+and its terminal-artifact twin (or a reconnect replay) never produce duplicate
+rows; the DB enforces this via a unique partial index.
 """
 
 from __future__ import annotations
@@ -13,6 +25,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from .models import (
@@ -24,6 +37,31 @@ from .models import (
 )
 
 Visibility = str  # "user" | "internal" | "security"
+
+# Default webhook firehose scope: every visibility (opt-out, not opt-in).
+DEFAULT_VISIBILITY_SCOPE: tuple[Visibility, ...] = ("user", "internal", "security")
+
+# Agent-internal event types that must NOT reach the browser SSE stream. Node
+# execution markers are operational telemetry (``internal``); the agent's own
+# Layer-B RBAC decision projections are ``security`` (webhook audit only — never
+# hand authz reason codes to the client, which aids permission probing).
+_AGENT_SECURITY_EVENT_TYPES: frozenset[str] = frozenset(
+    {"agent.authz.allowed", "agent.authz.denied"}
+)
+
+
+def agent_event_visibility(event_type: str) -> Visibility:
+    """Classify an agent-emitted sub-event into its ledger visibility.
+
+    Single source of truth used by BOTH the live streaming consumer and the
+    terminal-artifact reconcile pass so an event lands with the same visibility
+    no matter which path persists it first.
+    """
+    if event_type.startswith("agent.node."):
+        return "internal"
+    if event_type in _AGENT_SECURITY_EVENT_TYPES:
+        return "security"
+    return "user"
 
 # Substrings that mark a key as carrying a credential/secret. Their VALUE is
 # always replaced before an I/O payload is persisted to an event (and thus
@@ -111,26 +149,87 @@ def emit_event(
     event_type: str,
     payload: dict[str, Any],
     visibility: Visibility,
-) -> AgentRunEvent:
-    event = AgentRunEvent(
-        id=str(uuid.uuid4()),
-        run_id=run.id,
-        owner_subject=run.owner_subject,
-        sequence=next_sequence(session, run.id),
-        type=event_type,
-        payload=payload,
-        visibility=visibility,
-        created_at=_now(),
-    )
-    session.add(event)
-    # Every user-visibility update (not just run.completed) is mirrored to the
-    # owner's webhook via the transactional outbox, so the same stream the
-    # frontend sees over SSE is delivered to the configured destination. The
-    # event is flushed first so the outbox row's FK references a persisted id.
-    if visibility == "user":
-        session.flush()
-        enqueue_webhook_if_configured(session, run, event)
+    dedupe_key: str | None = None,
+) -> AgentRunEvent | None:
+    """Append one ordered event and (idempotently) enqueue its webhook delivery.
+
+    When ``dedupe_key`` is given the insert is idempotent: a second write of the
+    same logical sub-event (terminal-artifact twin / reconnect replay) is a
+    no-op and returns ``None`` WITHOUT re-enqueuing a webhook. Lifecycle events
+    pass ``dedupe_key=None`` (emitted exactly once by the worker).
+
+    The webhook outbox row is written in the SAME transaction (transactional
+    outbox) for EVERY visibility the owner subscribed to; the browser SSE
+    channel stays ``user``-only at the API read layer, independent of this.
+    """
+    if dedupe_key is not None:
+        event = _insert_idempotent(
+            session,
+            run,
+            event_type=event_type,
+            payload=payload,
+            visibility=visibility,
+            dedupe_key=dedupe_key,
+        )
+        if event is None:
+            # Already persisted (streamed earlier / replayed): skip the webhook
+            # too so a coalesced delivery is never duplicated.
+            return None
+    else:
+        event = AgentRunEvent(
+            id=str(uuid.uuid4()),
+            run_id=run.id,
+            owner_subject=run.owner_subject,
+            sequence=next_sequence(session, run.id),
+            type=event_type,
+            payload=payload,
+            visibility=visibility,
+            dedupe_key=None,
+            created_at=_now(),
+        )
+        session.add(event)
+    # Flush so the outbox row's FK references a persisted event id, then fan out
+    # to the owner's webhook (scope-gated inside enqueue_webhook_if_configured).
+    session.flush()
+    enqueue_webhook_if_configured(session, run, event)
     return event
+
+
+def _insert_idempotent(
+    session: Session,
+    run: AgentRun,
+    *,
+    event_type: str,
+    payload: dict[str, Any],
+    visibility: Visibility,
+    dedupe_key: str,
+) -> AgentRunEvent | None:
+    """Insert an agent sub-event, skipping silently on a ``dedupe_key`` conflict.
+
+    Returns the persisted row, or ``None`` when an equal-keyed row already
+    exists (the unique partial index makes this race-safe across retries).
+    """
+    event_id = str(uuid.uuid4())
+    stmt = (
+        pg_insert(AgentRunEvent)
+        .values(
+            id=event_id,
+            run_id=run.id,
+            owner_subject=run.owner_subject,
+            sequence=next_sequence(session, run.id),
+            type=event_type,
+            payload=payload,
+            visibility=visibility,
+            dedupe_key=dedupe_key,
+            created_at=_now(),
+        )
+        .on_conflict_do_nothing(index_elements=["dedupe_key"])
+        .returning(AgentRunEvent.id)
+    )
+    inserted = session.execute(stmt).scalar_one_or_none()
+    if inserted is None:
+        return None
+    return session.get(AgentRunEvent, event_id)
 
 
 def record_audit(
@@ -170,11 +269,16 @@ def set_run_status(session: Session, run: AgentRun, status: str) -> None:
 def enqueue_webhook_if_configured(
     session: Session, run: AgentRun, event: AgentRunEvent
 ) -> WebhookDelivery | None:
-    """Write a webhook outbox row for ``event`` IF the owner has an active config.
+    """Write a webhook outbox row for ``event`` IF the owner subscribed to it.
 
     Called in the SAME transaction as the event it describes (transactional
-    outbox): a separate dispatcher claims and sends pending rows. The unique
-    (event_id, destination_url) index makes re-enqueue idempotent.
+    outbox): a separate dispatcher claims, coalesces, and sends pending rows.
+    The unique ``(event_id, destination_url)`` index makes re-enqueue idempotent.
+
+    The full firehose is the default: a delivery is written for EVERY visibility
+    unless the owner narrowed it via ``visibility_scope`` / ``event_type_allowlist``
+    (opt-out, never silent-drop). This does NOT widen the browser SSE channel,
+    which the API filters to ``visibility = 'user'`` independently.
     """
     config = session.execute(
         select(WebhookAuthConfig).where(
@@ -183,6 +287,13 @@ def enqueue_webhook_if_configured(
         )
     ).scalar_one_or_none()
     if config is None:
+        return None
+
+    scope = config.visibility_scope or list(DEFAULT_VISIBILITY_SCOPE)
+    if event.visibility not in scope:
+        return None
+    allowlist = config.event_type_allowlist
+    if allowlist is not None and event.type not in allowlist:
         return None
 
     delivery = WebhookDelivery(

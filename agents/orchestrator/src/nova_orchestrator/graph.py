@@ -36,7 +36,7 @@ from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from .agent_client import AgentClient, AgentClientError
+from .agent_client import AgentClient, AgentClientError, AgentEvent
 from .agent_state import AgentStateStore, HistoryEntry, render_history
 from .agents import AgentRegistry
 from .authz.policy_gate import REASON_ALLOWED, evaluate_capability
@@ -45,7 +45,13 @@ from .authz.snapshot import EntitlementSnapshot
 from .capability_guide import CapabilityToolSpec, spec_for, tool_name_for
 from .content_policy import resolve_text
 from .dag import MenuItem, Observation, OrchestrationState
-from .events import emit_event, record_audit, safe_io, set_run_status
+from .events import (
+    agent_event_visibility,
+    emit_event,
+    record_audit,
+    safe_io,
+    set_run_status,
+)
 from .llm import Reasoner
 from .models import AgentRun, AgentStep
 from .observability import langfuse_tracing as lf
@@ -108,6 +114,47 @@ def _required_permission_for(capability_id: str) -> str | None:
     if capability is None or not capability.required_permissions:
         return None
     return "+".join(capability.required_permissions)
+
+
+def _agent_dedupe_key(
+    run_id: str, capability_id: str, index: int, agent_seq: int | None
+) -> str | None:
+    """Deterministic idempotency key for one agent sub-event.
+
+    ``agent_seq`` is monotonic per agent task; ``capability_id`` + ``index``
+    disambiguate multiple agent hops within one run. Returns ``None`` when the
+    agent supplied no ordinal (then the event is emitted without dedupe).
+    """
+    if agent_seq is None:
+        return None
+    return f"{run_id}:{capability_id}:{index}:{agent_seq}"
+
+
+def _emit_agent_event(
+    session: Session,
+    run: AgentRun,
+    *,
+    capability_id: str,
+    index: int,
+    event: AgentEvent,
+) -> None:
+    """Persist one agent sub-event with worker-side redaction + idempotency.
+
+    The worker is the redaction boundary of record: ``safe_io`` runs here for
+    EVERY visibility before the row is written. Visibility is classified
+    centrally (``agent.node.*`` -> internal, ``agent.authz.*`` -> security, the
+    rest -> user) so a streamed frame and its terminal-artifact twin land
+    identically and dedupe against each other.
+    """
+    safe_payload = safe_io(event.payload)
+    emit_event(
+        session,
+        run,
+        event_type=event.type,
+        payload=safe_payload if isinstance(safe_payload, dict) else {},
+        visibility=agent_event_visibility(event.type),
+        dedupe_key=_agent_dedupe_key(run.id, capability_id, index, event.agent_seq),
+    )
 
 
 def _lock_and_load(session: Session, run_id: str) -> AgentRun | None:
@@ -521,6 +568,22 @@ def _run_agent_step(
                 Observation(capability_id, "agent", "failed", reason="no_agent_available")
             )
 
+        # Project the orchestrator's Layer-B allow into the security audit
+        # firehose (webhook only; never the browser SSE). The immutable trail is
+        # still record_audit(...) on the call outcome below.
+        emit_event(
+            session,
+            run,
+            event_type="authz.allowed",
+            payload={
+                "capability": capability_id,
+                "requiredPermission": required_permission,
+                "decision": "allow",
+                "reasonCode": decision.reason,
+                "actor": WORKER_ACTOR,
+            },
+            visibility="security",
+        )
         agent_step = AgentStep(
             id=_uuid(),
             run_id=run.id,
@@ -547,6 +610,21 @@ def _run_agent_step(
         run.last_heartbeat_at = _now()
         session.commit()
 
+    # Live streaming sink: each sub-event the agent pushes mid-run is persisted
+    # in its OWN short transaction (no lock held across the A2A network hop) with
+    # worker-side redaction + idempotency, and bumps the heartbeat so a long
+    # agent call produces liveness signal throughout instead of looking idle.
+    def stream_sink(event: AgentEvent) -> None:
+        with deps.session_factory() as session:
+            run = session.get(AgentRun, run_id)
+            if run is None or run.status in TERMINAL_STATUSES:
+                return
+            _emit_agent_event(
+                session, run, capability_id=capability_id, index=index, event=event
+            )
+            run.last_heartbeat_at = _now()
+            session.commit()
+
     # External A2A hop OUTSIDE the DB transaction (no locks held during network IO).
     # Propagate the run's Langfuse trace + the current observation id so the agent
     # joins THIS trace and nests under this dispatch span (one shared context).
@@ -569,6 +647,7 @@ def _run_agent_step(
                 conversation_id=conversation_id,
                 langfuse_trace_id=trace_id,
                 langfuse_parent_observation_id=parent_observation_id,
+                on_event=stream_sink,
             )
         except AgentClientError as exc:
             error = f"agent_error:{exc.status_code or 'network'}"
@@ -613,20 +692,14 @@ def _run_agent_step(
                 Observation(capability_id, "agent", "failed", reason=error)
             )
 
-        # Normalize the agent's own progress events into the user-visible run
-        # stream so every sub-step (incl. its tool/write inputs and outputs) is
-        # tracked over SSE and delivered to the webhook. Payloads are redacted +
-        # bounded; the agent never returns raw SQL or rows.
+        # Reconcile / backfill: the terminal artifact carries the full ordered
+        # sub-event list. Anything already streamed live is skipped by its
+        # dedupe key (idempotent insert); anything the stream missed (dropped
+        # frame, batch-mode agent, reconnect gap) is filled in here. Payloads are
+        # redacted + bounded by the worker; the agent never returns raw SQL/rows.
         for event in agent_result.events:
-            # event.payload is a dict, so safe_io returns a dict; the isinstance
-            # check narrows the object return type for the typed emit_event.
-            safe_payload = safe_io(event.payload)
-            emit_event(
-                session,
-                run,
-                event_type=event.type,
-                payload=safe_payload if isinstance(safe_payload, dict) else {},
-                visibility="user",
+            _emit_agent_event(
+                session, run, capability_id=capability_id, index=index, event=event
             )
 
         if agent_result.status == "completed":

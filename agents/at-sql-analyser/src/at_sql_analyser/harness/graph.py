@@ -27,7 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast, get_args
 
@@ -36,6 +36,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from ..mcp.data_client import DataClient, DataClientError
 from ..observability import langfuse_tracing as lf
+from ..skills import AGENT_NAME
 from ..tools.capability_client import CapabilityClient, CapabilityClientError
 from .guards import GuardLimits, evaluate_guards
 from .llm import Reasoner
@@ -114,9 +115,46 @@ class GraphDeps:
     langfuse_callbacks: object | None = None
 
 
+NodeFn = Callable[[GraphState], Awaitable[dict[str, Any]]]
+
+
 def build_graph(deps: GraphDeps) -> CompiledStateGraph:
     """Compile the agent DAG with its dependencies bound into the nodes."""
     emit = deps.on_event
+
+    def instrument(name: str, fn: NodeFn) -> NodeFn:
+        """Wrap a node so each execution emits bounded entry/exit markers.
+
+        Surfaces EVERY graph-node execution to the audit firehose generically
+        (no per-node hand-coding). Bounded metadata only — node name, iteration,
+        duration, outcome — never raw state, prompt text, SQL, or rows (those are
+        summarized by the agent.query.*/agent.write.* events). These are
+        agent-internal (``internal`` visibility), so they ride the same stream
+        but never reach the browser SSE channel.
+        """
+
+        async def wrapped(state: GraphState) -> dict[str, Any]:
+            emit(
+                "agent.node.started",
+                {"node": name, "iteration": int(state.get("iteration", 0))},
+            )
+            start_t = deps.clock()
+            outcome = "error"
+            try:
+                result = await fn(state)
+                outcome = "ok"
+                return result
+            finally:
+                emit(
+                    "agent.node.completed",
+                    {
+                        "node": name,
+                        "ms": round((deps.clock() - start_t) * 1000),
+                        "outcome": outcome,
+                    },
+                )
+
+        return wrapped
 
     async def start(state: GraphState) -> dict[str, Any]:
         return {"started_monotonic": deps.clock(), "iteration": 0, "write_outcomes": []}
@@ -304,17 +342,17 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
         return {"answer": None, "status": "failed", "reason": reason}
 
     builder = StateGraph(GraphState)
-    builder.add_node("start", start)
-    builder.add_node("load_schema", load_schema)
-    builder.add_node("plan_read", plan_read)
-    builder.add_node("dispatch_read", dispatch_read)
-    builder.add_node("validate", validate)
-    builder.add_node("execute", execute)
-    builder.add_node("critique", critique)
-    builder.add_node("compose", compose)
-    builder.add_node("plan_writes", plan_writes)
-    builder.add_node("dispatch_writes", dispatch_writes)
-    builder.add_node("compose_writes", compose_writes)
+    builder.add_node("start", instrument("start", start))
+    builder.add_node("load_schema", instrument("load_schema", load_schema))
+    builder.add_node("plan_read", instrument("plan_read", plan_read))
+    builder.add_node("dispatch_read", instrument("dispatch_read", dispatch_read))
+    builder.add_node("validate", instrument("validate", validate))
+    builder.add_node("execute", instrument("execute", execute))
+    builder.add_node("critique", instrument("critique", critique))
+    builder.add_node("compose", instrument("compose", compose))
+    builder.add_node("plan_writes", instrument("plan_writes", plan_writes))
+    builder.add_node("dispatch_writes", instrument("dispatch_writes", dispatch_writes))
+    builder.add_node("compose_writes", instrument("compose_writes", compose_writes))
 
     builder.add_edge(START, "start")
     builder.add_conditional_edges(
@@ -490,6 +528,11 @@ async def _dispatch_read(
             sql=label, sql_hash=step_hash, row_count=0, truncated=False,
             error=f"denied:{reason}", source="capability", capability_id=call.capability_id,
         )
+    emit(
+        "agent.authz.allowed",
+        {"capability": call.capability_id, "decision": "allow", "reasonCode": reason,
+         "actor": AGENT_NAME},
+    )
     if capability_client is None:
         return QueryAttempt(
             sql=label, sql_hash=step_hash, row_count=0, truncated=False,
@@ -547,6 +590,11 @@ async def _dispatch_writes(
                 WriteOutcome(call.capability_id, "denied", "", reason=reason)
             )
             continue
+        emit(
+            "agent.authz.allowed",
+            {"capability": call.capability_id, "decision": "allow", "reasonCode": reason,
+             "actor": AGENT_NAME},
+        )
         if capability_client is None:
             outcomes.append(
                 WriteOutcome(call.capability_id, "failed", "", reason="no_write_channel")

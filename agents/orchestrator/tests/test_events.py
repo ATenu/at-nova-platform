@@ -12,8 +12,14 @@ from typing import Any
 import pytest
 
 from nova_orchestrator import events as events_module
-from nova_orchestrator.events import _MAX_STRING, emit_event, safe_io
-from nova_orchestrator.models import AgentRun
+from nova_orchestrator.events import (
+    _MAX_STRING,
+    agent_event_visibility,
+    emit_event,
+    enqueue_webhook_if_configured,
+    safe_io,
+)
+from nova_orchestrator.models import AgentRun, WebhookAuthConfig, WebhookDelivery
 
 
 class _FakeSession:
@@ -31,8 +37,41 @@ class _FakeSession:
         self.flushed += 1
 
 
+class _ConfigSession(_FakeSession):
+    """Session whose execute() returns a single webhook config (or none)."""
+
+    def __init__(self, config: WebhookAuthConfig | None) -> None:
+        super().__init__()
+        self._config = config
+
+    def execute(self, _stmt: Any) -> Any:
+        config = self._config
+
+        class _Result:
+            def scalar_one_or_none(self) -> Any:
+                return config
+
+        return _Result()
+
+
 def _run() -> AgentRun:
     return AgentRun(id="11111111-1111-1111-1111-111111111111", owner_subject="user-1")
+
+
+def _config(**overrides: Any) -> WebhookAuthConfig:
+    config = WebhookAuthConfig(
+        id="cfg-1",
+        owner_subject="user-1",
+        auth_type="hmac",
+        destination_url="https://hook.example/ingest",
+        active=True,
+        visibility_scope=["user", "internal", "security"],
+        event_type_allowlist=None,
+        include_raw_payloads=False,
+    )
+    for key, value in overrides.items():
+        setattr(config, key, value)
+    return config
 
 
 # -- safe_io ---------------------------------------------------------------
@@ -80,51 +119,89 @@ def test_safe_io_passes_through_scalars() -> None:
     assert safe_io(1.5) == 1.5
 
 
-# -- emit_event webhook fan-out -------------------------------------------
+# -- visibility classification --------------------------------------------
 
 
-def test_user_event_enqueues_a_webhook(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_agent_event_visibility_classifier() -> None:
+    # Node markers are operational telemetry (internal); the agent's own RBAC
+    # decision projections are security; everything else is user-visible.
+    assert agent_event_visibility("agent.node.started") == "internal"
+    assert agent_event_visibility("agent.node.completed") == "internal"
+    assert agent_event_visibility("agent.authz.allowed") == "security"
+    assert agent_event_visibility("agent.authz.denied") == "security"
+    assert agent_event_visibility("agent.query.started") == "user"
+    assert agent_event_visibility("agent.write.completed") == "user"
+    assert agent_event_visibility("agent.read.completed") == "user"
+
+
+# -- emit_event webhook fan-out (full firehose) ----------------------------
+
+
+def test_emit_event_enqueues_webhook_for_every_visibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The firehose default: the webhook outbox is attempted for user, internal,
+    # AND security. The browser SSE channel stays user-only at the API layer,
+    # independent of this fan-out.
     enqueued: list[Any] = []
     monkeypatch.setattr(events_module, "next_sequence", lambda _s, _r: 1)
     monkeypatch.setattr(
         events_module,
         "enqueue_webhook_if_configured",
-        lambda _s, _run, event: enqueued.append(event),
+        lambda _s, _run, event: enqueued.append(event.visibility),
     )
     session = _FakeSession()
-    event = emit_event(
-        session,  # type: ignore[arg-type]
-        _run(),
-        event_type="tool.call.completed",
-        payload={"capability": "sales.create", "output": {"id": "s-1"}},
-        visibility="user",
-    )
-    assert enqueued == [event]
-    assert session.flushed == 1
+    for visibility, event_type in (
+        ("user", "tool.call.completed"),
+        ("internal", "planner.completed"),
+        ("security", "authz.allowed"),
+    ):
+        emit_event(
+            session,  # type: ignore[arg-type]
+            _run(),
+            event_type=event_type,
+            payload={},
+            visibility=visibility,
+        )
+    assert enqueued == ["user", "internal", "security"]
 
 
-def test_internal_and_security_events_never_webhook(monkeypatch: pytest.MonkeyPatch) -> None:
-    enqueued: list[Any] = []
-    monkeypatch.setattr(events_module, "next_sequence", lambda _s, _r: 1)
-    monkeypatch.setattr(
-        events_module,
-        "enqueue_webhook_if_configured",
-        lambda _s, _run, event: enqueued.append(event),
-    )
-    session = _FakeSession()
-    emit_event(
-        session,  # type: ignore[arg-type]
-        _run(),
-        event_type="planner.completed",
+# -- enqueue_webhook_if_configured scope gating ----------------------------
+
+
+def _delivery_for(event_type: str, visibility: str, config: WebhookAuthConfig) -> Any:
+    session = _ConfigSession(config)
+    event = emit_module_event(session, event_type, visibility)
+    return enqueue_webhook_if_configured(session, _run(), event)  # type: ignore[arg-type]
+
+
+def emit_module_event(session: Any, event_type: str, visibility: str) -> Any:
+    from nova_orchestrator.models import AgentRunEvent
+
+    return AgentRunEvent(
+        id="evt-1",
+        run_id="11111111-1111-1111-1111-111111111111",
+        owner_subject="user-1",
+        sequence=1,
+        type=event_type,
         payload={},
-        visibility="internal",
+        visibility=visibility,
     )
-    emit_event(
-        session,  # type: ignore[arg-type]
-        _run(),
-        event_type="authz.denied",
-        payload={"reason": "missing_permission"},
-        visibility="security",
-    )
-    assert enqueued == []
-    assert session.flushed == 0
+
+
+def test_enqueue_skips_visibility_outside_scope() -> None:
+    config = _config(visibility_scope=["user"])
+    assert _delivery_for("authz.allowed", "security", config) is None
+    assert _delivery_for("planner.completed", "internal", config) is None
+    delivery = _delivery_for("tool.call.completed", "user", config)
+    assert isinstance(delivery, WebhookDelivery)
+
+
+def test_enqueue_respects_event_type_allowlist() -> None:
+    config = _config(event_type_allowlist=["run.completed"])
+    assert _delivery_for("tool.call.completed", "user", config) is None
+    assert isinstance(_delivery_for("run.completed", "user", config), WebhookDelivery)
+
+
+def test_enqueue_no_config_is_noop() -> None:
+    assert _delivery_for("run.completed", "user", None) is None  # type: ignore[arg-type]

@@ -2,14 +2,21 @@
 
 Webhooks are NEVER sent from inside the orchestration task. The worker writes
 the event and its outbox row (`webhook_deliveries`) in one transaction; this
-dispatcher claims due pending rows, signs the body, sends over HTTPS, and
-records success/failure with exponential backoff until `succeeded` or
-`dead_letter`. The signing secret is resolved from a reference at send time and
-never stored or logged.
+dispatcher claims due pending rows, **coalesces** all due deliveries for the
+same destination into ONE signed HTTP POST (an ordered ``events[]`` batch),
+sends over HTTPS, and records success/failure with exponential backoff until
+`succeeded` or `dead_letter`. Coalescing is the primary volume control under the
+full firehose (every node execution, tool/MCP call, and RBAC decision): it cuts
+HTTP requests 10-50x WITHOUT dropping any event from the audit trail. The
+signing secret is resolved from a reference at send time and never stored or
+logged.
 
 Signature base string (plan section 13):
-    v1:{timestamp}:{eventId}:{sha256(rawBody)}
+    v1:{timestamp}:{batchId}:{sha256(rawBody)}
     signature = base64url(HMAC-SHA256(secret, baseString))
+
+``batchId`` is the lead delivery id of the coalesced group; each event keeps its
+own ``eventId``/``sequence`` inside the body so the receiver can order + dedupe.
 """
 
 from __future__ import annotations
@@ -19,6 +26,8 @@ import hashlib
 import hmac
 import json
 import os
+import uuid
+from collections import defaultdict
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -34,6 +43,11 @@ BACKOFF_SCHEDULE_S: tuple[int, ...] = (0, 10, 30, 120, 600, 1800, 7200)
 
 # Receiver responses that must NOT be retried (permanent client errors).
 NON_RETRYABLE_STATUS = frozenset({400, 401, 403, 404, 422})
+
+# Cap the coalesced body so a burst of large events cannot produce an unbounded
+# POST; a group that would exceed this is split into multiple ordered batches.
+# safe_io already bounds each event, so this is a coarse second guard.
+_MAX_BATCH_EVENTS = 100
 
 # Sender: (url, headers, raw_body) -> HTTP status code.
 Sender = Callable[[str, dict[str, str], bytes], int]
@@ -71,8 +85,8 @@ def resolve_secret(secret_ref: str | None) -> str | None:
     return os.environ.get("WEBHOOK_HMAC_SECRET")
 
 
-def _build_raw_body(event: AgentRunEvent) -> bytes:
-    payload: dict[str, Any] = {
+def _event_body(event: AgentRunEvent) -> dict[str, Any]:
+    return {
         "eventId": event.id,
         "runId": event.run_id,
         "ownerSubject": event.owner_subject,
@@ -80,26 +94,40 @@ def _build_raw_body(event: AgentRunEvent) -> bytes:
         "type": event.type,
         "payload": event.payload,
         "createdAt": event.created_at.astimezone(UTC).isoformat(),
-        "schemaVersion": 1,
+    }
+
+
+def build_batch_body(batch_id: str, events: list[AgentRunEvent]) -> bytes:
+    """Serialize a coalesced, ordered batch of events into one signed body.
+
+    The events are ordered by ``(run_id, sequence)`` so a receiver can reconcile
+    each run's timeline; every element keeps its own ``eventId`` for dedupe.
+    """
+    ordered = sorted(events, key=lambda e: (e.run_id, int(e.sequence)))
+    payload: dict[str, Any] = {
+        "schemaVersion": 2,
+        "batchId": batch_id,
+        "count": len(ordered),
+        "events": [_event_body(event) for event in ordered],
     }
     return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
-def _headers(
-    config: WebhookAuthConfig, delivery: WebhookDelivery, raw_body: bytes
+def _batch_headers(
+    config: WebhookAuthConfig, batch_id: str, event_count: int, raw_body: bytes
 ) -> dict[str, str]:
     timestamp = str(int(datetime.now(UTC).timestamp()))
     headers = {
         "Content-Type": "application/json",
-        "X-Nova-Event-Id": delivery.event_id,
+        "X-Nova-Batch-Id": batch_id,
+        "X-Nova-Event-Count": str(event_count),
         "X-Nova-Timestamp": timestamp,
-        "X-Nova-Delivery-Id": delivery.id,
     }
     if config.auth_type in ("hmac", "bearer_hmac"):
         secret = resolve_secret(config.hmac_secret_ref)
         if secret:
             headers["X-Nova-Signature"] = "v1=" + sign_body(
-                secret, timestamp, delivery.event_id, raw_body
+                secret, timestamp, batch_id, raw_body
             )
     if config.auth_type in ("bearer", "bearer_hmac"):
         token = resolve_secret(config.token_secret_ref)
@@ -113,12 +141,13 @@ def dispatch_due(
     *,
     sender: Sender,
     now: datetime | None = None,
-    limit: int = 50,
+    limit: int = 200,
 ) -> int:
     """Process due deliveries. Returns the number of rows handled.
 
-    Each row is claimed with ``FOR UPDATE SKIP LOCKED`` so multiple dispatcher
-    workers never double-send. Pure of Celery for testing (inject ``sender``).
+    Rows are claimed with ``FOR UPDATE SKIP LOCKED`` so multiple dispatcher
+    workers never double-send, then **coalesced by destination** into batched
+    POSTs. Pure of Celery for testing (inject ``sender``).
     """
     moment = now or datetime.now(UTC)
     handled = 0
@@ -137,43 +166,82 @@ def dispatch_due(
             .scalars()
             .all()
         )
+        # Coalesce by (destination, auth config): one signed POST per group, so
+        # a long run's dozens of audit events collapse into a few HTTP requests.
+        groups: dict[tuple[str, str | None], list[WebhookDelivery]] = defaultdict(list)
         for delivery in rows:
-            _process_one(session, delivery, sender=sender)
-            handled += 1
+            groups[(delivery.destination_url, delivery.auth_config_id)].append(delivery)
+        for group in groups.values():
+            _process_group(session, group, sender=sender)
+            handled += len(group)
         session.commit()
     return handled
 
 
-def _process_one(session: Session, delivery: WebhookDelivery, *, sender: Sender) -> None:
+def _process_group(
+    session: Session, deliveries: list[WebhookDelivery], *, sender: Sender
+) -> None:
+    """Send one coalesced batch for a destination, splitting on the size cap."""
+    lead = deliveries[0]
     config = (
-        session.get(WebhookAuthConfig, delivery.auth_config_id)
-        if delivery.auth_config_id
+        session.get(WebhookAuthConfig, lead.auth_config_id)
+        if lead.auth_config_id
         else None
     )
-    event = session.get(AgentRunEvent, delivery.event_id)
-    if config is None or event is None or not config.active:
-        _mark_dead_letter(delivery, "config_or_event_missing")
+    if config is None or not config.active:
+        for delivery in deliveries:
+            _mark_dead_letter(delivery, "config_missing")
         return
 
-    raw_body = _build_raw_body(event)
-    headers = _headers(config, delivery, raw_body)
-    delivery.attempt_count += 1
+    # Resolve each delivery's event; a missing event is permanently dead-lettered
+    # (its row was deleted) and excluded from the batch.
+    pairs: list[tuple[WebhookDelivery, AgentRunEvent]] = []
+    for delivery in deliveries:
+        event = session.get(AgentRunEvent, delivery.event_id)
+        if event is None:
+            _mark_dead_letter(delivery, "event_missing")
+            continue
+        pairs.append((delivery, event))
+
+    for start in range(0, len(pairs), _MAX_BATCH_EVENTS):
+        chunk = pairs[start : start + _MAX_BATCH_EVENTS]
+        if chunk:
+            _send_chunk(config, chunk, sender=sender)
+
+
+def _send_chunk(
+    config: WebhookAuthConfig,
+    chunk: list[tuple[WebhookDelivery, AgentRunEvent]],
+    *,
+    sender: Sender,
+) -> None:
+    batch_id = str(uuid.uuid4())
+    events = [event for _delivery, event in chunk]
+    raw_body = build_batch_body(batch_id, events)
+    headers = _batch_headers(config, batch_id, len(events), raw_body)
+    for delivery, _event in chunk:
+        delivery.attempt_count += 1
 
     try:
-        status_code = sender(delivery.destination_url, headers, raw_body)
+        status_code = sender(config.destination_url, headers, raw_body)
     except Exception as exc:  # noqa: BLE001 - transport errors must not crash the loop
-        _schedule_retry_or_dead_letter(delivery, f"transport_error:{type(exc).__name__}")
+        for delivery, _event in chunk:
+            _schedule_retry_or_dead_letter(delivery, f"transport_error:{type(exc).__name__}")
         return
 
     if 200 <= status_code < 300:
-        delivery.status = "succeeded"
-        delivery.delivered_at = datetime.now(UTC)
-        delivery.last_error = None
+        delivered = datetime.now(UTC)
+        for delivery, _event in chunk:
+            delivery.status = "succeeded"
+            delivery.delivered_at = delivered
+            delivery.last_error = None
         return
     if status_code in NON_RETRYABLE_STATUS:
-        _mark_dead_letter(delivery, f"non_retryable_status:{status_code}")
+        for delivery, _event in chunk:
+            _mark_dead_letter(delivery, f"non_retryable_status:{status_code}")
         return
-    _schedule_retry_or_dead_letter(delivery, f"status:{status_code}")
+    for delivery, _event in chunk:
+        _schedule_retry_or_dead_letter(delivery, f"status:{status_code}")
 
 
 def _schedule_retry_or_dead_letter(delivery: WebhookDelivery, reason: str) -> None:

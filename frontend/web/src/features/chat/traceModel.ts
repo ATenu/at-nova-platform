@@ -50,7 +50,12 @@ export interface TraceSummary {
   readonly stepCount: number;
 }
 
-const AGENT_INTERNAL_PREFIXES = ['agent.schema.', 'agent.query.', 'agent.write.'] as const;
+const AGENT_INTERNAL_PREFIXES = [
+  'agent.schema.',
+  'agent.query.',
+  'agent.read.',
+  'agent.write.',
+] as const;
 
 function payloadString(payload: Record<string, unknown>, key: string): string {
   const value = payload[key];
@@ -172,6 +177,24 @@ export function describeEvent(event: AgentRunEventDto): Omit<TraceItem, 'id'> | 
       };
     case 'agent.query.rejected':
       return { line: 'A query was rejected before running.', kind: 'agent' };
+    case 'agent.read.started':
+      return {
+        line: capability ? `Looking up ${capability}…` : 'Looking up data…',
+        kind: 'agent',
+        input: payload.input,
+      };
+    case 'agent.read.completed':
+      return {
+        line: rowCount !== null ? `Found ${rowCount} record(s).` : 'Lookup complete.',
+        kind: 'agent',
+        output: payload.output,
+      };
+    case 'agent.read.failed':
+    case 'agent.read.denied':
+      return {
+        line: `A lookup did not complete${capability ? ` (${capability})` : ''}.`,
+        kind: 'agent',
+      };
     case 'agent.write.started':
       return {
         line: capability ? `Applying ${capability}…` : 'Applying a change…',

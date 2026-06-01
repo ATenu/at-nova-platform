@@ -34,6 +34,7 @@ from a2a.types import (
     AgentSkill,
     DataPart,
     Part,
+    TaskState,
     TextPart,
 )
 from a2a.utils import get_data_parts
@@ -111,7 +112,11 @@ def build_agent_card(
         description="Read-only SQL analyst over curated, PII-aware business views.",
         version="0.1.0",
         url=cfg.public_url,
-        capabilities=AgentCapabilities(streaming=False, push_notifications=False),
+        # Streaming is on: sub-steps ride the SAME request connection as
+        # TaskStatusUpdateEvent frames so the worker persists them mid-run.
+        # Push notifications stay off (they add a callback trust boundary we do
+        # not need — streaming does not require them).
+        capabilities=AgentCapabilities(streaming=True, push_notifications=False),
         default_input_modes=["text/plain", "application/json"],
         default_output_modes=["text/plain", "application/json"],
         skills=[
@@ -158,6 +163,73 @@ class BearerAuthMiddleware:
 
 def _make_updater(context: RequestContext, event_queue: EventQueue) -> TaskUpdater:
     return TaskUpdater(event_queue, context.task_id or "", context.context_id or "")
+
+
+# Envelope key the worker reads off each intermediate TaskStatusUpdateEvent.
+_NOVA_EVENT_KEY = "novaEvent"
+
+
+class _SubEventStreamer:
+    """Publishes the agent's ordered sub-steps live as ``working`` frames.
+
+    The harness sink (``on_event``) is synchronous and called from async graph
+    nodes, so this buffers each sub-step on an in-process FIFO and a single
+    background task awaits the (async) ``EventQueue`` enqueue — never blocking a
+    node on the queue. A monotonic ``agentSeq`` per task lets the worker order +
+    dedupe deterministically even if transport reorders. Streaming is fail-soft:
+    a dropped frame is backfilled from the terminal artifact's ``collected``.
+    """
+
+    def __init__(self, updater: TaskUpdater) -> None:
+        self._updater = updater
+        self._buffer: asyncio.Queue[tuple[int, str, dict[str, Any]] | None] = asyncio.Queue()
+        self._seq = 0
+        self._task: asyncio.Task[None] | None = None
+        # The full ordered list returned in the terminal artifact (the
+        # reconciliation source of truth for any frame the worker missed).
+        self.collected: list[dict[str, Any]] = []
+
+    def start(self) -> None:
+        self._task = asyncio.create_task(self._drain())
+
+    def emit(self, event_type: str, payload: dict[str, Any]) -> None:
+        self._seq += 1
+        seq = self._seq
+        frame = dict(payload)
+        self.collected.append({"type": event_type, "payload": frame, "agentSeq": seq})
+        # Non-blocking: the buffer is unbounded so a node never awaits IO here.
+        self._buffer.put_nowait((seq, event_type, frame))
+
+    async def _drain(self) -> None:
+        while True:
+            item = await self._buffer.get()
+            if item is None:
+                return
+            seq, event_type, payload = item
+            try:
+                await self._updater.update_status(
+                    TaskState.working,
+                    final=False,
+                    metadata={
+                        _NOVA_EVENT_KEY: {
+                            "type": event_type,
+                            "payload": payload,
+                            "agentSeq": seq,
+                        }
+                    },
+                )
+            except Exception:  # noqa: BLE001, S112 - streaming is best-effort; the
+                # terminal-artifact reconcile backfills any frame we could not
+                # push, and a streaming failure must never abort the run.
+                continue
+
+    async def aclose(self) -> None:
+        """Flush all buffered frames, then stop the drainer (before terminal)."""
+        if self._task is None:
+            return
+        self._buffer.put_nowait(None)
+        await self._task
+        self._task = None
 
 
 def _history_text(store: AgentStateStore | None, conversation_id: str) -> str:
@@ -247,17 +319,29 @@ class SqlAnalystExecutor(AgentExecutor):
 
         tracer = build_tracer(task.run_id)
 
-        # Every sub-step is recorded twice: scrubbed to the tracer (no PII/SQL in
-        # logs) and verbatim into ``collected``, which is returned to the
-        # orchestrator so the full progress — incl. write inputs/outputs — can be
-        # streamed to the user (SSE) and delivered to the webhook.
-        collected: list[dict[str, Any]] = []
+        # Every sub-step is recorded three ways: scrubbed to the tracer (no
+        # PII/SQL in logs), pushed LIVE as a working frame over the A2A stream
+        # (so the worker persists it mid-run), and verbatim into ``collected``,
+        # which is returned in the terminal artifact as the reconciliation source
+        # of truth for any frame the worker missed.
+        streamer = _SubEventStreamer(updater)
+        streamer.start()
+        collected = streamer.collected
 
         def on_event(event_type: str, payload: dict[str, Any]) -> None:
             tracer.event(event_type, payload)
-            collected.append({"type": event_type, "payload": dict(payload)})
+            streamer.emit(event_type, payload)
 
         on_event("agent.task.received", {"skillId": task.skill_id, "intent": task.intent})
+
+        async def finish(
+            status: str, answer: str | None, reason: str | None
+        ) -> None:
+            # Drain every buffered sub-step BEFORE the terminal frame: an A2A
+            # task cannot publish more status updates once a terminal state is
+            # reached, so the live stream must be fully flushed first.
+            await streamer.aclose()
+            await self._terminal(updater, status, answer, reason, collected)
 
         # Open the agent's root span JOINED to the orchestrator's per-run trace,
         # then build the CallbackHandler inside it so every node + LLM generation
@@ -275,9 +359,7 @@ class SqlAnalystExecutor(AgentExecutor):
                         self._snapshot.fetch_verified, task.run_id
                     )
                 except SnapshotError:
-                    await self._terminal(
-                        updater, "denied", None, "entitlement_unavailable", collected
-                    )
+                    await finish("denied", None, "entitlement_unavailable")
                     return
 
                 store = (
@@ -299,15 +381,14 @@ class SqlAnalystExecutor(AgentExecutor):
                         "agent.task.denied",
                         {"skillId": task.skill_id, "reason": "unsupported_skill"},
                     )
-                    await self._terminal(
-                        updater, "denied", None, "unsupported_skill", collected
-                    )
+                    await finish("denied", None, "unsupported_skill")
                     return
 
-                await self._terminal(
-                    updater, result.status, result.answer, result.reason, collected
-                )
+                await finish(result.status, result.answer, result.reason)
         finally:
+            # Defensive: ensure the drainer is always stopped (e.g. on an
+            # unexpected error path) so no background task is orphaned.
+            await streamer.aclose()
             lf.flush()
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
@@ -339,6 +420,17 @@ class SqlAnalystExecutor(AgentExecutor):
                 {"skillId": SKILL_ANALYSE_READ, "reason": decision.reason},
             )
             return AgentResult("denied", None, decision.reason, 0)
+        # Project the agent's independent Layer-B allow into the security audit
+        # firehose (webhook only; never the browser SSE stream).
+        on_event(
+            "agent.authz.allowed",
+            {
+                "capability": SKILL_ANALYSE_READ,
+                "decision": "allow",
+                "reasonCode": decision.reason,
+                "actor": AGENT_NAME,
+            },
+        )
 
         def authorizer(capability_id: str) -> tuple[bool, str]:
             per_action = authorize(snapshot, capability_id)
@@ -384,6 +476,15 @@ class SqlAnalystExecutor(AgentExecutor):
                 {"skillId": SKILL_ACT_WRITE, "reason": decision.reason},
             )
             return AgentResult("denied", None, decision.reason, 0)
+        on_event(
+            "agent.authz.allowed",
+            {
+                "capability": SKILL_ACT_WRITE,
+                "decision": "allow",
+                "reasonCode": decision.reason,
+                "actor": AGENT_NAME,
+            },
+        )
 
         def authorizer(capability_id: str) -> tuple[bool, str]:
             per_action = authorize(snapshot, capability_id)

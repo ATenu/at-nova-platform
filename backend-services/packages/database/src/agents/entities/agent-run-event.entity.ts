@@ -11,6 +11,13 @@ import { AgentRun } from './agent-run.entity';
 @Entity({ name: 'agent_run_events' })
 @Index('UQ_agent_run_events_run_sequence', ['runId', 'sequence'], { unique: true })
 @Index('IDX_agent_run_events_owner_subject', ['ownerSubject'])
+@Index('UQ_agent_run_events_dedupe_key', ['dedupeKey'], {
+  unique: true,
+  where: '"dedupe_key" IS NOT NULL',
+})
+@Index('IDX_agent_run_events_user_run_sequence', ['runId', 'sequence'], {
+  where: `"visibility" = 'user'`,
+})
 export class AgentRunEvent {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -33,6 +40,14 @@ export class AgentRunEvent {
 
   @Column({ name: 'visibility', type: 'text' })
   visibility!: AgentEventVisibility;
+
+  /**
+   * Idempotency key for agent sub-events (streamed frame vs terminal-artifact
+   * twin vs reconnect replay). `NULL` for lifecycle events emitted exactly once.
+   * Uniqueness is enforced by a partial index (`WHERE dedupe_key IS NOT NULL`).
+   */
+  @Column({ name: 'dedupe_key', type: 'text', nullable: true })
+  dedupeKey!: string | null;
 
   @Column({ name: 'created_at', type: 'timestamptz', default: () => 'now()' })
   createdAt!: Date;

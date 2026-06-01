@@ -101,6 +101,31 @@ def process_run(
         except SnapshotIntegrityError as exc:
             return _fail_closed(session, run, reason=str(exc))
 
+        # Snapshot integrity gate passed: project the allow into the security
+        # audit firehose (webhook only; never the browser SSE) and record the
+        # authoritative audit row, mirroring the deny path in _fail_closed.
+        emit_event(
+            session,
+            run,
+            event_type="authz.allowed",
+            payload={
+                "action": "snapshot.verify",
+                "decision": "allow",
+                "reasonCode": "verified",
+                "actor": WORKER_ACTOR,
+            },
+            visibility="security",
+        )
+        record_audit(
+            session,
+            run_id=run.id,
+            owner_subject=run.owner_subject,
+            actor=WORKER_ACTOR,
+            action="snapshot.verify",
+            decision="allow",
+            reason="verified",
+        )
+
         if run.cancel_requested:
             set_run_status(session, run, "canceled")
             emit_event(session, run, event_type="run.canceled", payload={}, visibility="user")

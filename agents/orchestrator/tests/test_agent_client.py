@@ -9,14 +9,27 @@ the audience-restricted bearer token, and invalidates the token on 401.
 from __future__ import annotations
 
 import pytest
-from a2a.types import Artifact, DataPart, Message, Part, Role, Task, TaskState, TaskStatus, TextPart
+from a2a.types import (
+    Artifact,
+    DataPart,
+    Message,
+    Part,
+    Role,
+    Task,
+    TaskState,
+    TaskStatus,
+    TaskStatusUpdateEvent,
+    TextPart,
+)
 
 from nova_orchestrator.agent_client import (
     AgentClient,
     AgentClientError,
+    AgentEvent,
     _BearerInterceptor,
     _coerce_events,
     _coerce_links,
+    _coerce_stream_event,
     _parse_result,
 )
 
@@ -132,6 +145,68 @@ def test_coerce_events_drops_malformed_entries() -> None:
 def test_coerce_events_handles_non_list() -> None:
     assert _coerce_events(None) == ()
     assert _coerce_events("nope") == ()
+
+
+def test_coerce_events_preserves_agent_seq() -> None:
+    events = _coerce_events(
+        [
+            {"type": "agent.query.started", "payload": {"sqlHash": "x"}, "agentSeq": 3},
+            {"type": "agent.node.started", "payload": {"node": "execute"}},  # no seq
+        ]
+    )
+    assert events[0].agent_seq == 3
+    assert events[1].agent_seq is None
+
+
+def test_coerce_stream_event_rejects_malformed_envelopes() -> None:
+    coerced = _coerce_stream_event(
+        {"type": "agent.query.started", "payload": {"a": 1}, "agentSeq": 7}
+    )
+    assert coerced == AgentEvent(type="agent.query.started", payload={"a": 1}, agent_seq=7)
+    assert _coerce_stream_event({"type": "", "payload": {}}) is None
+    assert _coerce_stream_event({"payload": {}}) is None
+    assert _coerce_stream_event("nope") is None
+    # A bool is not a valid ordinal (bool is an int subclass; reject it).
+    assert _coerce_stream_event({"type": "x", "payload": {}, "agentSeq": True}).agent_seq is None
+
+
+async def test_forward_frame_invokes_callback_for_nonfinal_subevent() -> None:
+    seen: list[AgentEvent] = []
+    update = TaskStatusUpdateEvent(
+        task_id="t",
+        context_id="c",
+        final=False,
+        status=TaskStatus(state=TaskState.working),
+        metadata={
+            "novaEvent": {
+                "type": "agent.query.started",
+                "payload": {"sqlHash": "sha256:x"},
+                "agentSeq": 1,
+            }
+        },
+    )
+    await AgentClient._forward_frame(update, seen.append)
+    assert seen == [
+        AgentEvent(type="agent.query.started", payload={"sqlHash": "sha256:x"}, agent_seq=1)
+    ]
+
+
+async def test_forward_frame_ignores_final_and_unrelated_updates() -> None:
+    seen: list[AgentEvent] = []
+    final = TaskStatusUpdateEvent(
+        task_id="t",
+        context_id="c",
+        final=True,
+        status=TaskStatus(state=TaskState.completed),
+        metadata={"novaEvent": {"type": "agent.completed", "payload": {}, "agentSeq": 9}},
+    )
+    await AgentClient._forward_frame(final, seen.append)
+    await AgentClient._forward_frame(object(), seen.append)  # not an update event
+    no_meta = TaskStatusUpdateEvent(
+        task_id="t", context_id="c", final=False, status=TaskStatus(state=TaskState.working)
+    )
+    await AgentClient._forward_frame(no_meta, seen.append)
+    assert seen == []
 
 
 def test_coerce_links_filters_malformed_entries() -> None:

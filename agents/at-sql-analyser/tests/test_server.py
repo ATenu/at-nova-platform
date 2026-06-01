@@ -225,6 +225,34 @@ def test_read_task_returns_progress_events() -> None:
     assert "agent.query.completed" in types
 
 
+def test_read_task_returns_node_and_authz_events_with_monotonic_seq() -> None:
+    # Full audit firehose: every graph-node execution and the agent's own
+    # Layer-B allow are returned alongside the user-facing sub-steps, each tagged
+    # with a monotonic agentSeq so the worker can order + dedupe deterministically.
+    client, _, _ = build_client()
+    events = result_data(send_task(client))["events"]
+    types = {event["type"] for event in events}
+    assert "agent.node.started" in types
+    assert "agent.node.completed" in types
+    assert "agent.authz.allowed" in types
+    seqs = [event["agentSeq"] for event in events]
+    assert all(isinstance(seq, int) for seq in seqs)
+    assert seqs == sorted(seqs)
+    assert len(seqs) == len(set(seqs))  # strictly unique + monotonic
+
+
+def test_denied_task_emits_no_progress_or_allow_events() -> None:
+    # A task denied at the skill gate must never emit user-visible progress or an
+    # allow projection — only the terminal denial.
+    client, _, _ = build_client(snapshot=make_snapshot(allowlist=()))
+    body = result_data(send_task(client))
+    assert body["status"] == "denied"
+    types = {event["type"] for event in body["events"]}
+    assert "agent.authz.allowed" not in types
+    assert "agent.query.started" not in types
+    assert "agent.node.started" not in types
+
+
 def test_approved_write_returns_io_events() -> None:
     snap = make_snapshot(roles=("admin",), allowlist=("data.act.write", "issues.create"))
     reasoner = FakeReasoner(writes=[WriteItem(capability_id="issues.create", input={"title": "x"})])

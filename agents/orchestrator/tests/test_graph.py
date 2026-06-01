@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from nova_orchestrator import graph as graph_module
+from nova_orchestrator.agent_client import AgentEvent
 from nova_orchestrator.agent_state import AgentStateStore, HistoryEntry
 from nova_orchestrator.agents import AgentDescriptor, AgentRegistry, CardSkill
 from nova_orchestrator.authz.nova_authz import CAPABILITY_CATALOG
@@ -21,8 +23,10 @@ from nova_orchestrator.graph import (
     OrchestratorDeps,
     StepResult,
     _after_dispatch,
+    _agent_dedupe_key,
     _build_menu,
     _call_signature,
+    _emit_agent_event,
     _fallback_answer,
     _has_entitled_underlying,
     _load_history,
@@ -188,6 +192,47 @@ def test_call_signature_is_order_independent() -> None:
     b = _call_signature("sales.report.customer", {"x": 1, "customerId": "u-1"})
     assert a == b
     assert a != _call_signature("sales.report.customer", {"customerId": "u-2"})
+
+
+# -- agent sub-event persistence (dedupe + central visibility) ------------
+
+
+def test_agent_dedupe_key_is_deterministic_and_disambiguates_hops() -> None:
+    a = _agent_dedupe_key("run-1", "data.analyse.read", 0, 3)
+    assert a == "run-1:data.analyse.read:0:3"
+    # Same ordinal, different hop index -> distinct key (two agent calls in a run).
+    assert a != _agent_dedupe_key("run-1", "data.analyse.read", 1, 3)
+    # No ordinal -> no dedupe key (event is emitted without idempotency).
+    assert _agent_dedupe_key("run-1", "data.analyse.read", 0, None) is None
+
+
+def test_emit_agent_event_classifies_visibility_and_passes_dedupe_key(
+    monkeypatch,
+) -> None:
+    captured: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        graph_module,
+        "emit_event",
+        lambda _s, _run, **kw: captured.append(kw),
+    )
+    run = _AgentRunStub("run-9")
+    for event in (
+        AgentEvent(type="agent.node.started", payload={}, agent_seq=1),
+        AgentEvent(type="agent.authz.allowed", payload={}, agent_seq=2),
+        AgentEvent(type="agent.query.completed", payload={"rows": 3}, agent_seq=3),
+    ):
+        _emit_agent_event(
+            None, run, capability_id="data.analyse.read", index=0, event=event  # type: ignore[arg-type]
+        )
+    assert [c["visibility"] for c in captured] == ["internal", "security", "user"]
+    assert captured[0]["dedupe_key"] == "run-9:data.analyse.read:0:1"
+    assert captured[2]["dedupe_key"] == "run-9:data.analyse.read:0:3"
+
+
+class _AgentRunStub:
+    def __init__(self, run_id: str) -> None:
+        self.id = run_id
+        self.owner_subject = "user-1"
 
 
 def test_after_dispatch_terminal_status_ends_run() -> None:

@@ -1,5 +1,5 @@
 import { Column, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
-import type { WebhookAuthType } from '../agent-enums';
+import type { AgentEventType, AgentEventVisibility, WebhookAuthType } from '../agent-enums';
 
 /**
  * Per-owner webhook authentication configuration (section 13). Holds only
@@ -35,6 +35,35 @@ export class WebhookAuthConfig {
 
   @Column({ name: 'destination_url', type: 'text' })
   destinationUrl!: string;
+
+  /**
+   * Which event visibilities this owner's webhook receives (default = all three).
+   * The browser SSE stream is always `user`-only and unaffected by this field;
+   * only the server-to-server audit webhook may additionally carry
+   * `internal`/`security`. Lets an owner who does not need the full firehose
+   * narrow it (opt-out), without ever widening the browser channel.
+   */
+  @Column({
+    name: 'visibility_scope',
+    type: 'jsonb',
+    default: () => `'["user","internal","security"]'::jsonb`,
+  })
+  visibilityScope!: AgentEventVisibility[];
+
+  /**
+   * Optional allowlist of event types to deliver. `null` = all types (firehose).
+   */
+  @Column({ name: 'event_type_allowlist', type: 'jsonb', nullable: true })
+  eventTypeAllowlist!: AgentEventType[] | null;
+
+  /**
+   * Entitlement-gated opt-in for literal SQL / raw row bodies in webhook
+   * payloads. Default OFF: SQL stays hashed (`sqlHash`) and reads are summarized
+   * by `rowCount`. The owner must hold the data-layer entitlement and accept PII
+   * handling before this is enabled.
+   */
+  @Column({ name: 'include_raw_payloads', type: 'boolean', default: false })
+  includeRawPayloads!: boolean;
 
   @Column({ name: 'active', type: 'boolean', default: true })
   active!: boolean;

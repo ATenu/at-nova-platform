@@ -69,6 +69,10 @@ class AgentRunEvent(Base):
     type: Mapped[str] = mapped_column(Text, nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     visibility: Mapped[str] = mapped_column(Text, nullable=False)
+    # Idempotency key for agent sub-events (streamed frame vs terminal-artifact
+    # twin vs reconnect replay). NULL for lifecycle events emitted exactly once;
+    # uniqueness enforced by a partial index (WHERE dedupe_key IS NOT NULL).
+    dedupe_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -108,6 +112,13 @@ class WebhookAuthConfig(Base):
     audience: Mapped[str | None] = mapped_column(Text, nullable=True)
     issuer: Mapped[str | None] = mapped_column(Text, nullable=True)
     destination_url: Mapped[str] = mapped_column(Text, nullable=False)
+    # Which event visibilities this owner's webhook receives (default all three).
+    # The browser SSE stream is always user-only regardless of this value.
+    visibility_scope: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    # Optional event-type allowlist; NULL = all types (full firehose).
+    event_type_allowlist: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    # Entitlement-gated opt-in for literal SQL / raw rows (default OFF).
+    include_raw_payloads: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
