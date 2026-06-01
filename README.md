@@ -114,6 +114,24 @@ Once it is healthy, open the app and sign in:
 | Keycloak admin console | http://localhost:8080 |
 | Langfuse (observability) | http://localhost:3100 |
 
+#### Langfuse (LLM observability)
+
+Langfuse is **automatically seeded and wired in** on first boot — no manual setup
+step is required. `docker compose up` headlessly creates the org (`nova`), project
+(`nova-chat`), admin user, and pinned project API keys; the Celery worker and the
+`at-sql-analyser` agent pick up those keys from `.env` and start tracing immediately.
+Every agent run opens one trace (keyed by `runId`); the analyst agent joins the same
+trace over A2A, so orchestration, LLM calls, MCP reads, and capability hops all
+appear nested under a single view in the Langfuse UI as soon as you use the chat.
+
+Sign in at http://localhost:3100 with the seeded credentials:
+
+| Email | Password |
+| --- | --- |
+| `admin@test.com` | `admin123` |
+
+> Tracing is **fail-soft**: a Langfuse outage never fails an agent run.
+
 > To start fresh at any point (clean databases, realm, and all volumes):
 > `docker compose down -v` then `docker compose up --build`.
 
