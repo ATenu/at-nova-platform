@@ -416,7 +416,7 @@ sequenceDiagram
     API-->>U: SSE agent.query.* (live)
 
     Note over SQL,WK: 8) Agent composes + returns
-    SQL->>LLM: critique -> satisfied; compose final answer
+    SQL->>LLM: critique satisfied, then compose final answer
     SQL-->>WK: terminal Task (completed, answer, events[])
 
     Note over WK,API: 9) Critique / compose / finalize
