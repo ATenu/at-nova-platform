@@ -144,8 +144,7 @@ Each user logs in once at http://localhost:5173 with `ChangeMe123!`, and Keycloa
 > permanently rewrites these seeded passwords (to `TestRunner123!`, non-temporary)
 > and clears the first-login gate. To restore the documented state, rebuild from a
 > clean slate (`docker compose down -v && docker compose up --build`). See
-> [`deliverables-documents/KEYCLOAK.md`](deliverables-documents/KEYCLOAK.md) for the
-> full detail.
+> [`KEYCLOAK.md`](KEYCLOAK.md) for the full detail.
 
 ### Roles → permissions
 
@@ -218,12 +217,12 @@ trust boundaries, and exactly how a user question travels from the browser throu
 the orchestrator to an A2A agent and its MCP tools (with both system-design and
 agentic-flow diagrams) — is in:
 
-- [**Solution Design** → `deliverables-documents/SOLUTION_DESIGN.md`](deliverables-documents/SOLUTION_DESIGN.md)
+- [**Solution Design** → `SOLUTION_DESIGN.md`](SOLUTION_DESIGN.md)
 
 Identity and Keycloak integration specifics (realm, clients, seeding, first-login
 behaviour, production hardening) are in:
 
-- [**Keycloak Integration** → `deliverables-documents/KEYCLOAK.md`](deliverables-documents/KEYCLOAK.md)
+- [**Keycloak Integration** → `KEYCLOAK.md`](KEYCLOAK.md)
 
 ## Use of AI
 
@@ -231,12 +230,12 @@ How AI (Cursor + the coding assistant) was used to build this platform — the
 spec-driven approach, the guardrails set up before writing code, and the close
 human review of every output:
 
-- [**Use of AI** → `deliverables-documents/USE_OF_AI.md`](deliverables-documents/USE_OF_AI.md)
+- [**Use of AI** → `USE_OF_AI.md`](USE_OF_AI.md)
 
 ## Evaluation Results
 
 The agentic-quality evaluation — what was tested, the LLM-as-Judge approach,
 deterministic security/write checks, and the per-scenario commentary:
 
-- [**Evaluation Results (commentary)** → `deliverables-documents/EVALUATION_RESULTS.md`](deliverables-documents/EVALUATION_RESULTS.md)
-- [**Full evaluation report (spreadsheet)** → `deliverables-documents/nova_agentic_quality_report_gpt.xlsx`](deliverables-documents/nova_agentic_quality_report_gpt.xlsx)
+- [**Evaluation Results (commentary)** → `EVALUATION_RESULTS.md`](EVALUATION_RESULTS.md)
+- [**Full evaluation report (spreadsheet)** → `nova_agentic_quality_report_gpt.xlsx`](nova_agentic_quality_report_gpt.xlsx)
