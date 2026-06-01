@@ -22,7 +22,7 @@ from typing import Any
 
 from .authz.registry import get_capability
 
-# Read skill: free-form data Q&A over the curated views (gated read-data).
+# Read skill: free-form data Q&A over the curated views (per-view domain gating).
 SKILL_ANALYSE_READ = "data.analyse.read"
 # Write dispatch skill: high-risk, may only invoke cataloged write capabilities,
 # each independently gated + approval-gated (the agent mints no write authority).

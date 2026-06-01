@@ -1,5 +1,6 @@
 export * from './rbac/permissions';
 export * from './rbac/capabilities';
+export * from './rbac/data-views';
 export * from './auth/service-token-client';
 export * from './auth/entitlement-snapshot';
 export * from './errors/app-error';

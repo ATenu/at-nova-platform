@@ -17,6 +17,16 @@ describe('describeSchema', () => {
     const mine = describeSchema().find((view) => view.name === 'my_assigned_actions');
     expect(mine?.ownerScoped).toBe(true);
   });
+
+  it('filters to only the caller-entitled views when an allowlist is given', () => {
+    const allowed = new Set(['sales', 'products']);
+    const views = describeSchema(allowed);
+    expect(views.map((view) => view.name).sort()).toEqual(['products', 'sales']);
+  });
+
+  it('hides every view when the entitled set is empty', () => {
+    expect(describeSchema(new Set())).toEqual([]);
+  });
 });
 
 describe('listViews', () => {
@@ -24,5 +34,10 @@ describe('listViews', () => {
     const names = listViews().map((view) => view.name);
     expect(names).toContain('sales');
     expect(names).toContain('customers');
+  });
+
+  it('filters to only the caller-entitled views when an allowlist is given', () => {
+    const names = listViews(new Set(['customers'])).map((view) => view.name);
+    expect(names).toEqual(['customers']);
   });
 });

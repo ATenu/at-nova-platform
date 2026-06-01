@@ -8,11 +8,11 @@ import { Auditor, hashSql } from '../audit/audit';
 import type { ReadOnlyDataSource } from '../data/readonly-datasource';
 import { describeSchema, listViews } from '../schema/describe-schema';
 import { authorizeCapability, isEntitled } from '../auth/authorize';
+import { entitledViews, findForbiddenView } from '../auth/view-access';
 import type { VerifiedCaller } from '../auth/resource-server';
 import type { VerifiedSnapshot } from '../auth/snapshot-client';
-import { validateSelect, type ParseFn } from '../sql/validate-select';
+import { validateSelect, SqlValidationError, type ParseFn } from '../sql/validate-select';
 import { clampSelectToLimit, capResultBytes } from '../sql/limits';
-import { redactRows, redactedColumnNames } from '../sql/redact';
 import { McpError, toSafeError } from '../errors';
 
 const DESCRIBE_CAPABILITY = 'data.schema.describe';
@@ -60,7 +60,15 @@ const runSelectInputSchema = {
 export function registerTools(server: McpServer, ctx: ToolContext): void {
   const auditor = new Auditor(ctx.logger);
 
-  if (isEntitled(ctx.snapshot, DESCRIBE_CAPABILITY)) {
+  // Per-view entitlement: the curated `mcp_read` views the caller's domain
+  // permissions allow (mirrors the REST routes via the shared catalog). This is
+  // the data authorization boundary — the SQL tools are only worth exposing when
+  // the caller can read at least one view, and the advertised schema is filtered
+  // to exactly these views so the planner never proposes an unauthorized read.
+  const allowedViews = entitledViews(ctx.snapshot.permissions);
+  const hasAnyView = allowedViews.size > 0;
+
+  if (isEntitled(ctx.snapshot, DESCRIBE_CAPABILITY) && hasAnyView) {
     server.registerTool(
       'describe_schema',
       {
@@ -73,7 +81,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       () =>
         guard('describe_schema', ctx, auditor, DESCRIBE_CAPABILITY, () => {
           authorizeCapability(ctx.snapshot, DESCRIBE_CAPABILITY);
-          const views = describeSchema();
+          const views = describeSchema(allowedViews);
           auditor.record({
             runId: ctx.snapshot.runId,
             ownerSubject: ctx.snapshot.ownerSubject,
@@ -81,7 +89,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
             capability: DESCRIBE_CAPABILITY,
             decision: 'allow',
           });
-          return { views, redactedColumns: redactedColumnNames() };
+          return { views };
         }),
     );
 
@@ -95,7 +103,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       () =>
         guard('list_views', ctx, auditor, DESCRIBE_CAPABILITY, () => {
           authorizeCapability(ctx.snapshot, DESCRIBE_CAPABILITY);
-          const views = listViews();
+          const views = listViews(allowedViews);
           auditor.record({
             runId: ctx.snapshot.runId,
             ownerSubject: ctx.snapshot.ownerSubject,
@@ -108,16 +116,17 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     );
   }
 
-  if (isEntitled(ctx.snapshot, SELECT_CAPABILITY)) {
+  if (isEntitled(ctx.snapshot, SELECT_CAPABILITY) && hasAnyView) {
     server.registerTool(
       'run_select_query',
       {
         title: 'Run a read-only SELECT',
         description:
-          'Execute a single read-only SELECT against the mcp_read views. The query is parsed and ' +
-          'validated (single SELECT, allowlisted relations only, no DML/DDL/locks/dangerous functions), ' +
-          'capped by row and byte limits, run as a least-privileged read-only role, and PII columns are ' +
-          'masked. Use parameterized placeholders ($1, $2, ...) and supply values in "params".',
+          'Execute a single read-only SELECT against the mcp_read views you are entitled to. The query ' +
+          'is parsed and validated (single SELECT, allowlisted relations only, no DML/DDL/locks/dangerous ' +
+          'functions), every referenced view is authorized against your domain permissions, and the result ' +
+          'is capped by row and byte limits and run as a least-privileged read-only role. Use parameterized ' +
+          'placeholders ($1, $2, ...) and supply values in "params".',
         inputSchema: runSelectInputSchema,
       },
       (rawArgs) =>
@@ -130,17 +139,58 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           try {
             validated = await validateSelect(args.sql, ctx.parseFn);
           } catch (error) {
+            // Capture the granular validation reason (an enum like
+            // `relation_not_allowlisted` / `unparsable`) for the audit trail and
+            // logs so a rejected query is diagnosable. The reason and the curated
+            // SqlValidationError message are caller-safe (a reason + the offending
+            // relation/function name only — never SQL text, params, or rows).
+            const reason = error instanceof SqlValidationError ? error.reason : 'unparsable';
             auditor.record({
               runId: ctx.snapshot.runId,
               ownerSubject: ctx.snapshot.ownerSubject,
               caller: ctx.caller.azp,
               capability: SELECT_CAPABILITY,
               decision: 'deny',
-              reason: 'sql_rejected',
+              reason: `sql_rejected:${reason}`,
             });
-            throw error instanceof McpError
-              ? error
+            ctx.logger.warn(
+              { tool: 'run_select_query', code: 'sql_rejected', reason },
+              'mcp.sql.rejected',
+            );
+            // Surface the curated message so the agent's critique learns WHY and
+            // can self-correct (e.g. use an allowlisted view) instead of looping.
+            throw error instanceof SqlValidationError
+              ? new McpError('sql_rejected', error.message)
               : new McpError('sql_rejected', 'The query was rejected by the SQL safety check.');
+          }
+
+          // Per-view authorization (the data boundary): every relation the query
+          // touches must map to a domain permission the caller holds. A join
+          // across views is default-deny — it requires EVERY touched view's
+          // permission. `validateSelect` already constrained relations to the
+          // allowlisted `mcp_read` views, so each has a mapped permission.
+          const denial = findForbiddenView(validated.relations, allowedViews);
+          if (denial !== null) {
+            const required = denial.requiredPermission;
+            auditor.record({
+              runId: ctx.snapshot.runId,
+              ownerSubject: ctx.snapshot.ownerSubject,
+              caller: ctx.caller.azp,
+              capability: SELECT_CAPABILITY,
+              decision: 'deny',
+              reason: `view_forbidden:${denial.view}${required ? `:${required}` : ''}`,
+              relations: validated.relations,
+            });
+            ctx.logger.warn(
+              { tool: 'run_select_query', code: 'view_forbidden', view: denial.view },
+              'mcp.view.forbidden',
+            );
+            throw new McpError(
+              'view_forbidden',
+              required
+                ? `Not entitled to read mcp_read.${denial.view} (requires ${required}).`
+                : `Not entitled to read mcp_read.${denial.view}.`,
+            );
           }
 
           const capped = clampSelectToLimit(args.sql, ctx.sql.maxRows);
@@ -148,8 +198,9 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
             ownerSubject: ctx.snapshot.ownerSubject,
             statementTimeoutMs: ctx.sql.statementTimeoutMs,
           });
-          const redacted = redactRows(rawRows);
-          const { rows, truncated } = capResultBytes(redacted, ctx.sql.maxResultBytes);
+          // No PII masking: rows are returned verbatim. Access is governed by the
+          // per-view authorization above (only entitled views are ever fetched).
+          const { rows, truncated } = capResultBytes(rawRows, ctx.sql.maxResultBytes);
 
           auditor.record({
             runId: ctx.snapshot.runId,

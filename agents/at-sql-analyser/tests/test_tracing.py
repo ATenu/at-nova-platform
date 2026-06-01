@@ -18,3 +18,31 @@ def test_scrub_truncates_long_strings() -> None:
 def test_scrub_replaces_complex_values() -> None:
     out = scrub({"meta": {"nested": True}})
     assert out["meta"] == "<dict>"
+
+
+def test_scrub_keeps_query_io_out_of_traces() -> None:
+    # The owner's stream carries verbatim input/output (SQL + rows); the tracer
+    # must collapse those nested structures so neither SQL nor rows reach Langfuse.
+    started = scrub(
+        {
+            "tool": "run_select_query",
+            "sqlHash": "sha256:abc",
+            "input": {"sql": "SELECT full_name FROM mcp_read.customers", "params": []},
+        }
+    )
+    assert started["tool"] == "run_select_query"
+    assert started["sqlHash"] == "sha256:abc"
+    assert started["input"] == "<dict>"
+
+    completed = scrub(
+        {
+            "tool": "run_select_query",
+            "sqlHash": "sha256:abc",
+            "rowCount": 1,
+            "truncated": False,
+            "error": False,
+            "output": {"rows": [{"full_name": "Jane Doe"}], "rowCount": 1},
+        }
+    )
+    assert completed["output"] == "<dict>"
+    assert "Jane Doe" not in str(completed)

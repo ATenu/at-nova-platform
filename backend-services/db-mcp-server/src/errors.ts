@@ -7,6 +7,7 @@
 export type McpErrorCode =
   | 'unauthenticated'
   | 'forbidden'
+  | 'view_forbidden'
   | 'invalid_request'
   | 'sql_rejected'
   | 'upstream_unavailable'

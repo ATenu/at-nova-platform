@@ -21,9 +21,10 @@ import type { MigrationInterface, QueryRunner } from 'typeorm';
  *  - `security_barrier` views + a per-session GUC `nova.owner_subject` (set via
  *    `SET LOCAL` by the MCP server inside each query transaction). Owner-scoped
  *    views filter on it and FAIL CLOSED (no rows) when it is unset, so dynamic
- *    SQL cannot escape ownership scoping. Nova is single-tenant: the shared CRM
- *    views are gated by the `read-data` entitlement; `mcp_read.my_assigned_actions`
- *    demonstrates per-subject row scoping for owner-keyed data.
+ *    SQL cannot escape ownership scoping. Nova is single-tenant: each shared CRM
+ *    view is gated per request by its domain permission (see `@nova/shared`
+ *    `data-views.ts`); `mcp_read.my_assigned_actions` demonstrates per-subject row
+ *    scoping for owner-keyed data.
  *
  * The `nova_mcp_readonly` password is provisioned from `MCP_READONLY_DB_PASSWORD`
  * (never committed). The `db-init` job supplies it; the migration fails closed if

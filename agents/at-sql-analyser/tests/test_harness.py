@@ -61,7 +61,13 @@ async def test_finish_without_query() -> None:
     assert data.calls == []
 
 
-async def test_emits_pii_free_events() -> None:
+async def test_query_events_carry_tool_input_output_for_the_owner_stream() -> None:
+    # The owner's live stream (the harness sink) carries the tool name plus the
+    # VERBATIM input (SQL + params) and output (rows). The Langfuse tracer scrubs
+    # those nested structures (asserted via `scrub` below + in test_tracing), so
+    # the full data only ever travels the owner's own channel.
+    from at_sql_analyser.observability.tracing import scrub
+
     data = FakeDataClient()
     seen: list[tuple[str, dict[str, object]]] = []
     deps = GraphDeps(
@@ -71,11 +77,28 @@ async def test_emits_pii_free_events() -> None:
         on_event=lambda t, p: seen.append((t, p)),
     )
     await run_task(_task(), deps)
-    types = [t for t, _ in seen]
-    assert "agent.query.started" in types and "agent.completed" in types
+    by_type = {t: p for t, p in seen}
+    assert "agent.query.started" in by_type and "agent.completed" in by_type
+
+    started = by_type["agent.query.started"]
+    assert started["tool"] == "run_select_query"
+    assert started["input"] == {"sql": "SELECT 1 FROM mcp_read.sales", "params": []}
+
+    completed = by_type["agent.query.completed"]
+    assert completed["tool"] == "run_select_query"
+    assert completed["output"] == {
+        "rows": [{"amount": 10}],
+        "rowCount": 1,
+        "truncated": False,
+    }
+
+    # The Langfuse view of every event drops SQL and rows (nested -> "<dict>").
     for _, payload in seen:
-        assert "sql" not in payload
-        assert "rows" not in payload
+        scrubbed = scrub(payload)
+        assert "sql" not in scrubbed
+        assert "rows" not in scrubbed
+        assert scrubbed.get("input", "<dict>") == "<dict>"
+        assert scrubbed.get("output", "<dict>") == "<dict>"
 
 
 async def test_timeout_guard_terminates_loop() -> None:

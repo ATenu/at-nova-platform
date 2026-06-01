@@ -10,30 +10,24 @@ import {
 describe('RBAC definitions', () => {
   it('exposes the expected counts', () => {
     expect(ROLES).toHaveLength(5);
-    expect(PERMISSIONS).toHaveLength(19);
+    // `read-data` was removed: data access is now governed per-view by domain
+    // permissions (see `data-views.ts`), not a coarse SQL gate.
+    expect(PERMISSIONS).toHaveLength(18);
   });
 
-  it('maps roles to permissions with the documented totals (57 grants)', () => {
+  it('maps roles to permissions with the documented totals (54 grants)', () => {
     const totalGrants = Object.values(ROLE_PERMISSIONS).reduce(
       (sum, perms) => sum + perms.length,
       0,
     );
-    // 54 prior grants + `read-data` granted to admin, support-operations-user,
-    // and ops-compliance (the data-layer roles).
-    expect(totalGrants).toBe(57);
-    expect(ROLE_PERMISSIONS['admin']).toHaveLength(19);
-    expect(ROLE_PERMISSIONS['support-operations-user']).toHaveLength(12);
+    // 57 prior grants minus `read-data` (previously granted to admin,
+    // support-operations-user, and ops-compliance) = 54.
+    expect(totalGrants).toBe(54);
+    expect(ROLE_PERMISSIONS['admin']).toHaveLength(18);
+    expect(ROLE_PERMISSIONS['support-operations-user']).toHaveLength(11);
     expect(ROLE_PERMISSIONS['sales-user']).toHaveLength(10);
     expect(ROLE_PERMISSIONS['customer-support']).toHaveLength(10);
-    expect(ROLE_PERMISSIONS['ops-compliance']).toHaveLength(6);
-  });
-
-  it('grants read-data only to the data-layer roles (default deny)', () => {
-    expect(rolesGrantPermission(['admin'], 'read-data')).toBe(true);
-    expect(rolesGrantPermission(['support-operations-user'], 'read-data')).toBe(true);
-    expect(rolesGrantPermission(['ops-compliance'], 'read-data')).toBe(true);
-    expect(rolesGrantPermission(['sales-user'], 'read-data')).toBe(false);
-    expect(rolesGrantPermission(['customer-support'], 'read-data')).toBe(false);
+    expect(ROLE_PERMISSIONS['ops-compliance']).toHaveLength(5);
   });
 
   it('grants the agent-run lifecycle permissions to every assistant-using role', () => {

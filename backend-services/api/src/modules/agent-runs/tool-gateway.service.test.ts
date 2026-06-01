@@ -151,7 +151,9 @@ describe('ToolGatewayService', () => {
     const view = await service.getEntitlement('run-1');
     expect(view.runId).toBe('run-1');
     expect(view.ownerSubject).toBe('kc-1');
-    expect(view.permissions).toContain('read-data');
+    expect(view.permissions).toContain('read-sop');
+    // data.query.select is reachable for any agent-run user; per-view gating in
+    // the MCP server is the real data boundary, so it stays in the allowlist.
     expect(view.capabilityAllowlist).toContain('data.query.select');
     expect(view.snapshotHash).toMatch(/^sha256:/);
     // No tokens, prompts, or other PII fields are present on the view.

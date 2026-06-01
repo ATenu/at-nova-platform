@@ -90,13 +90,19 @@ function operationFamily(type: string): string {
   return lastDot > 0 ? type.slice(0, lastDot) : type;
 }
 
-/** Map an agent-internal sub-step event to a running/completed/failed status. */
-function substepStatus(type: string): InvocationStatus {
+/**
+ * Map an agent-internal sub-step event to a running/completed/failed status. A
+ * query reports its terminal as `agent.query.completed` even when it errored, so
+ * a truthy `error` flag in the payload is treated as a failure (otherwise an
+ * errored query would render as a successful empty read).
+ */
+function substepStatus(event: AgentRunEventDto): InvocationStatus {
+  const type = event.type;
   if (type.endsWith('.started')) {
     return 'running';
   }
   if (type.endsWith('.completed') || type.endsWith('.loaded') || type.endsWith('.allowed')) {
-    return 'completed';
+    return event.payload.error === true ? 'failed' : 'completed';
   }
   return 'failed';
 }
@@ -134,6 +140,7 @@ function errorPatch(value: string | undefined): { error?: string } {
 export function describeEvent(event: AgentRunEventDto): Omit<TraceItem, 'id'> | null {
   const payload = event.payload;
   const capability = payloadString(payload, 'capability');
+  const tool = payloadString(payload, 'tool');
   const agent = payloadString(payload, 'agent');
   const summary = payloadString(payload, 'summary');
   const node = payloadString(payload, 'node');
@@ -183,13 +190,28 @@ export function describeEvent(event: AgentRunEventDto): Omit<TraceItem, 'id'> | 
     case 'agent.schema.loaded':
       return { line: 'Inspecting available data…', kind: 'agent' };
     case 'agent.query.started':
-      return { line: 'Querying data…', kind: 'agent' };
-    case 'agent.query.completed':
+      return {
+        line: tool ? `Running ${tool}…` : 'Querying data…',
+        kind: 'agent',
+        input: payload.input,
+      };
+    case 'agent.query.completed': {
+      // A query reports `completed` even on error; surface the failure + reason
+      // rather than a misleading "Read 0 row(s)".
+      if (payload.error === true) {
+        const reason = payloadString(payload, 'reason');
+        return {
+          line: reason ? `Query failed: ${reason}` : 'Query failed.',
+          kind: 'agent',
+          ...(reason ? { output: reason } : {}),
+        };
+      }
       return {
         line: rowCount !== null ? `Read ${rowCount} row(s).` : 'Query complete.',
         kind: 'agent',
         output: payload.output,
       };
+    }
     case 'agent.query.rejected':
       return { line: 'A query was rejected before running.', kind: 'agent' };
     case 'agent.read.started':
@@ -320,7 +342,7 @@ export function buildTraceView(
     if (!described || (!detailed && described.technical)) {
       return;
     }
-    const status = substepStatus(event.type);
+    const status = substepStatus(event);
     const family = operationFamily(event.type);
     const runningIndex = runningOps.get(family);
     if (status === 'running') {

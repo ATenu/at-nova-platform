@@ -152,7 +152,7 @@ def load_config() -> OrchestratorConfig:
         run_soft_time_limit_s=_int("RUN_SOFT_TIME_LIMIT_S", 6900),
         run_time_limit_s=_int("RUN_TIME_LIMIT_S", 7200),
         nova_api_internal_url=_optional("NOVA_API_INTERNAL_URL", "http://nova-api:3000"),
-        max_run_steps=_int("MAX_RUN_STEPS", 8),
+        max_run_steps=_int("MAX_RUN_STEPS", 30),
         sql_analyst_agent_url=_optional(
             "SQL_ANALYST_AGENT_URL", "http://at-sql-analyser:8003"
         ),
@@ -172,7 +172,7 @@ def load_config() -> OrchestratorConfig:
         # Optional at boot (the gateway role does not reason); the worker's LLM
         # client fails fast if it is missing when reasoning is actually needed.
         openai_api_key=_optional("OPENAI_API_KEY", ""),
-        llm_model=_optional("LLM_MODEL", "gpt-4o-mini"),
+        llm_model=_optional("LLM_MODEL", "kimi-2.6"),
         llm_temperature=_float("LLM_TEMPERATURE", 0.0),
         llm_timeout_s=_float("LLM_TIMEOUT_S", 30.0),
         openai_base_url=os.environ.get("OPENAI_BASE_URL") or None,
@@ -182,5 +182,5 @@ def load_config() -> OrchestratorConfig:
         agent_state_ttl_s=_int("AGENT_STATE_TTL_SECONDS", 7200),
         agent_history_ttl_s=_int("AGENT_HISTORY_TTL_SECONDS", 2_592_000),
         agent_history_max_entries=_int("AGENT_HISTORY_MAX_ENTRIES", 200),
-        agent_history_read_limit=_int("AGENT_HISTORY_READ_LIMIT", 20),
+        agent_history_read_limit=_int("AGENT_HISTORY_READ_LIMIT", 30),
     )

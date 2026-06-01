@@ -70,6 +70,57 @@ describe('traceModel.buildTraceView', () => {
     });
   });
 
+  it('surfaces the tool name, SQL input, and row output on a merged query sub-step', () => {
+    const events: AgentRunEventDto[] = [
+      event({ type: 'agent.call.started', sequence: 1, payload: { agent: 'sql-analyst' } }),
+      event({
+        type: 'agent.query.started',
+        sequence: 2,
+        payload: {
+          tool: 'run_select_query',
+          sqlHash: 'abc',
+          input: { sql: 'SELECT full_name FROM mcp_read.customers', params: [] },
+        },
+      }),
+      event({
+        type: 'agent.query.completed',
+        sequence: 3,
+        payload: {
+          tool: 'run_select_query',
+          rowCount: 1,
+          output: { rows: [{ full_name: 'Jane Doe' }], rowCount: 1 },
+        },
+      }),
+    ];
+
+    const view = buildTraceView(events);
+    const substep = view.invocations[0]!.substeps[0]!;
+    expect(substep).toMatchObject({
+      status: 'completed',
+      line: 'Read 1 row(s).',
+      input: { sql: 'SELECT full_name FROM mcp_read.customers', params: [] },
+      output: { rows: [{ full_name: 'Jane Doe' }], rowCount: 1 },
+    });
+  });
+
+  it('labels a running query sub-step with the tool name when present', () => {
+    const events: AgentRunEventDto[] = [
+      event({ type: 'agent.call.started', sequence: 1, payload: { agent: 'sql-analyst' } }),
+      event({
+        type: 'agent.query.started',
+        sequence: 2,
+        payload: { tool: 'run_select_query', sqlHash: 'abc', input: { sql: 'SELECT 1', params: [] } },
+      }),
+    ];
+
+    const view = buildTraceView(events);
+    expect(view.invocations[0]!.substeps[0]).toMatchObject({
+      status: 'running',
+      line: 'Running run_select_query…',
+      input: { sql: 'SELECT 1', params: [] },
+    });
+  });
+
   it('keeps a still-running agent operation as a running sub-step', () => {
     const events: AgentRunEventDto[] = [
       event({ type: 'agent.call.started', sequence: 1, payload: { agent: 'sql-analyst' } }),
@@ -94,6 +145,30 @@ describe('traceModel.buildTraceView', () => {
     const view = buildTraceView(events);
     expect(view.invocations[0]!.substeps).toHaveLength(1);
     expect(view.invocations[0]!.substeps[0]!.status).toBe('failed');
+  });
+
+  it('treats an errored agent.query.completed as failed, not a 0-row read', () => {
+    const events: AgentRunEventDto[] = [
+      event({ type: 'agent.call.started', sequence: 1, payload: { agent: 'sql-analyst' } }),
+      event({ type: 'agent.query.started', sequence: 2, payload: { sqlHash: 'abc' } }),
+      event({
+        type: 'agent.query.completed',
+        sequence: 3,
+        payload: {
+          sqlHash: 'abc',
+          rowCount: 0,
+          truncated: false,
+          error: true,
+          reason: 'sql_rejected: Relation "mcp_read.orders" is not in the mcp_read allowlist.',
+        },
+      }),
+    ];
+
+    const view = buildTraceView(events);
+    const substep = view.invocations[0]!.substeps[0]!;
+    expect(substep.status).toBe('failed');
+    expect(substep.line).toContain('Query failed');
+    expect(substep.line).toContain('mcp_read.orders');
   });
 
   it('hides technical (node/authz) sub-steps in the default view, shows them when detailed', () => {

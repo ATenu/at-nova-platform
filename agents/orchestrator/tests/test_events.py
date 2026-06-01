@@ -95,6 +95,33 @@ def test_safe_io_redacts_secret_like_keys_but_keeps_business_data() -> None:
     assert out["items"][0]["password"] == "[redacted]"
 
 
+def test_safe_io_passes_through_query_tool_input_and_output() -> None:
+    # The SQL analyst's query events carry the verbatim tool name, input (SQL +
+    # params) and output (rows, incl. the owner's own PII) for the owner's trace;
+    # safe_io must preserve all of it (only secret-like keys are redacted).
+    started = safe_io(
+        {
+            "tool": "run_select_query",
+            "sqlHash": "sha256:abc",
+            "input": {"sql": "SELECT full_name FROM mcp_read.customers", "params": ["x"]},
+        }
+    )
+    assert started["tool"] == "run_select_query"
+    assert started["input"]["sql"] == "SELECT full_name FROM mcp_read.customers"
+    assert started["input"]["params"] == ["x"]
+
+    completed = safe_io(
+        {
+            "tool": "run_select_query",
+            "rowCount": 1,
+            "truncated": False,
+            "output": {"rows": [{"full_name": "Jane Doe", "total": 137.75}], "rowCount": 1},
+        }
+    )
+    assert completed["output"]["rows"] == [{"full_name": "Jane Doe", "total": 137.75}]
+    assert completed["rowCount"] == 1
+
+
 def test_safe_io_bounds_long_strings() -> None:
     out = safe_io({"blob": "x" * (_MAX_STRING + 5000)})
     assert isinstance(out["blob"], str)

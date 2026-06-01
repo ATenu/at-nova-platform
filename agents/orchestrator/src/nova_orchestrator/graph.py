@@ -178,8 +178,9 @@ def _has_entitled_underlying(allowlist: frozenset[str], mode: str) -> bool:
     (``delegated``) business capabilities, but an umbrella is only worth showing
     when the user is actually entitled to at least one underlying capability the
     agent can run for that mode. For reads this is any entitled ``delegated``
-    read capability OR the free-form SQL ``mcp-tool`` surface (``read-data``);
-    for writes, any entitled ``delegated`` write capability.
+    read capability OR the free-form SQL ``mcp-tool`` surface
+    (``data.query.select``); for writes, any entitled ``delegated`` write
+    capability.
     """
     for capability_id in allowlist:
         underlying = get_capability(capability_id)

@@ -4,18 +4,21 @@
  * This is the single source of truth for three controls:
  *  1. the FROM allowlist enforced by the SQL validator (`sql/validate-select.ts`):
  *     every referenced relation must resolve to `MCP_READ_SCHEMA.<allowlisted view>`;
- *  2. the queryable surface advertised by `describe_schema` / `list_views`; and
- *  3. column classification used by the redaction layer (`sql/redact.ts`).
+ *  2. the queryable surface advertised by `describe_schema` / `list_views`,
+ *     filtered per request to the caller's per-view entitlement; and
+ *  3. column classification surfaced as an advisory `pii` flag by
+ *     `describe_schema` (so the planner knows which columns are personal data).
  *
- * The curated views already exclude hard PII at the database layer; the column
- * classification here is defense in depth — anything marked `pii` is masked in
- * results even if a future view change exposes it. Changing this allowlist is a
- * security-sensitive change and must go through the PII review.
+ * Access to each view is authorized per request against the caller's domain
+ * permissions (see `@nova/shared` `data-views.ts`), mirroring the REST routes.
+ * Rows are returned verbatim for entitled views (no output masking); the curated
+ * views already exclude hard PII at the database layer. Changing this allowlist
+ * is a security-sensitive change and must go through the PII review.
  */
 
 export const MCP_READ_SCHEMA = 'mcp_read' as const;
 
-/** Column sensitivity. `pii` columns are masked by the redaction layer. */
+/** Column sensitivity. `pii` columns are flagged (advisory) in describe output. */
 export type ColumnSensitivity = 'public' | 'pii';
 
 export interface ViewColumn {
@@ -175,17 +178,4 @@ export function isAllowedRelation(schema: string | undefined, relation: string):
 
 export function getView(name: string): ViewDescriptor | undefined {
   return VIEW_BY_NAME.get(name);
-}
-
-/** The set of column names classified as PII across all views (for redaction). */
-export function piiColumnNames(): ReadonlySet<string> {
-  const names = new Set<string>();
-  for (const view of MCP_READ_VIEWS) {
-    for (const column of view.columns) {
-      if (column.sensitivity === 'pii') {
-        names.add(column.name);
-      }
-    }
-  }
-  return names;
 }

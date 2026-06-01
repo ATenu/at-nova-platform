@@ -70,21 +70,24 @@ describe('capability catalog', () => {
     }
   });
 
-  it('gates the free-form SQL mcp-tools on read-data only', () => {
-    // The DB MCP server's own tools stay gated on the coarse read-data permission.
+  it('reaches the free-form SQL mcp-tools via create-agent-run (per-view gating)', () => {
+    // The DB MCP server's own tools are reachable for any agent-run user; the
+    // authorization boundary is per-view (see `data-views.ts`), enforced by the
+    // MCP server, not a coarse SQL permission.
     for (const id of ['data.schema.describe', 'data.query.select']) {
       const capability = getCapability(id);
       expect(capability).toBeDefined();
-      expect(capability!.requiredPermissions).toEqual(['read-data']);
+      expect(capability!.requiredPermissions).toEqual(['create-agent-run']);
       expect(capability!.risk).toBe('low');
     }
-    const dataUser = new Set<Permission>(['read-data']);
-    const allowed = capabilitiesForPermissions(dataUser).map((capability) => capability.id);
+    const runner = new Set<Permission>(['create-agent-run']);
+    const allowed = capabilitiesForPermissions(runner).map((capability) => capability.id);
     expect(allowed).toEqual(
       expect.arrayContaining(['data.schema.describe', 'data.query.select']),
     );
-    const noData = new Set<Permission>(['read-sales']);
-    expect(capabilitiesForPermissions(noData).map((c) => c.id)).not.toContain('data.query.select');
+    // A domain permission WITHOUT create-agent-run does not reach the SQL tools.
+    const noRun = new Set<Permission>(['read-sales']);
+    expect(capabilitiesForPermissions(noRun).map((c) => c.id)).not.toContain('data.query.select');
   });
 
   it('gates the umbrella delegation skills on create-agent-run, not data access', () => {
@@ -97,8 +100,8 @@ describe('capability catalog', () => {
       expect(capability!.requiredPermissions).toEqual(['create-agent-run']);
       expect(capability!.delegated ?? false).toBe(false);
     }
-    // read-data alone does NOT surface the umbrellas (no create-agent-run).
-    const dataOnly = new Set<Permission>(['read-data']);
+    // A domain read permission alone does NOT surface the umbrellas (no run perm).
+    const dataOnly = new Set<Permission>(['read-sales']);
     const dataAllowed = capabilitiesForPermissions(dataOnly).map((c) => c.id);
     expect(dataAllowed).not.toContain('data.analyse.read');
     expect(dataAllowed).not.toContain('data.act.write');

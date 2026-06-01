@@ -6,7 +6,7 @@ function snapshot(overrides: Partial<VerifiedSnapshot> = {}): VerifiedSnapshot {
     runId: 'run-1',
     ownerSubject: 'sub-1',
     roles: ['support-operations-user'],
-    permissions: ['read-data'],
+    permissions: ['create-agent-run', 'read-sales'],
     capabilityAllowlist: ['data.schema.describe', 'data.query.select'],
     expiresAtEpochS: Math.floor(Date.now() / 1000) + 600,
     ...overrides,

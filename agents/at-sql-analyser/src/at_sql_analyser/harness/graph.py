@@ -165,8 +165,10 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
     # -- read path ----------------------------------------------------------
     async def load_schema(state: GraphState) -> dict[str, Any]:
         # The schema is only useful for the free-form SQL family. When SQL is not
-        # available (caller lacks read-data) skip the MCP round trip entirely —
-        # the MCP server would deny it — and plan from structured reads only.
+        # available (caller lacks `data.query.select`) skip the MCP round trip
+        # entirely — the MCP server would deny it — and plan from structured
+        # reads only. The set of views returned is already filtered by the MCP
+        # server to those the caller is entitled to (per-view domain permission).
         views: tuple[SchemaView, ...] = ()
         if deps.sql_enabled and deps.data_client is not None:
             try:
@@ -254,18 +256,38 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
     async def execute(state: GraphState) -> dict[str, Any]:
         sql = state.get("pending_sql", "")
         params = list(state.get("pending_params", []))
-        emit("agent.query.started", {"sqlHash": hash_sql(sql)})
-        with lf.tool_span("mcp:run_select_query", sqlHash=hash_sql(sql)):
-            attempt = await _execute_query(deps.data_client, sql, params)
+        # The owner's trace surfaces the tool name + verbatim input (SQL + params)
+        # and output (rows). The tracer (Langfuse) still scrubs `sql`/`rows`, so
+        # the full data only ever travels the owner's own SSE/webhook channel.
         emit(
-            "agent.query.completed",
+            "agent.query.started",
             {
-                "sqlHash": attempt.sql_hash,
-                "rowCount": attempt.row_count,
-                "truncated": attempt.truncated,
-                "error": attempt.error is not None,
+                "tool": "run_select_query",
+                "sqlHash": hash_sql(sql),
+                "input": {"sql": sql, "params": params},
             },
         )
+        with lf.tool_span("mcp:run_select_query", sqlHash=hash_sql(sql)):
+            attempt = await _execute_query(deps.data_client, sql, params)
+        completed: dict[str, Any] = {
+            "tool": "run_select_query",
+            "sqlHash": attempt.sql_hash,
+            "rowCount": attempt.row_count,
+            "truncated": attempt.truncated,
+            "error": attempt.error is not None,
+        }
+        # Carry the caller-safe failure reason (e.g. the SQL-rejection code +
+        # offending view) so the trace shows WHY a query failed instead of a
+        # misleading "0 rows". Never SQL text, params, or rows in the reason.
+        if attempt.error is not None:
+            completed["reason"] = attempt.error
+        else:
+            completed["output"] = {
+                "rows": [dict(row) for row in attempt.rows],
+                "rowCount": attempt.row_count,
+                "truncated": attempt.truncated,
+            }
+        emit("agent.query.completed", completed)
         return {"attempts": [attempt]}
 
     async def critique(state: GraphState) -> dict[str, Any]:
@@ -541,7 +563,11 @@ async def _dispatch_read(
     idempotency_key = f"agent-read:{run_id}:{call.capability_id}:{index}"
     emit(
         "agent.read.started",
-        {"capability": call.capability_id, "input": dict(call.tool_input)},
+        {
+            "tool": call.capability_id,
+            "capability": call.capability_id,
+            "input": dict(call.tool_input),
+        },
     )
     try:
         with lf.tool_span(f"capability:{call.capability_id}", capability=call.capability_id):
@@ -559,7 +585,15 @@ async def _dispatch_read(
             error=code, source="capability", capability_id=call.capability_id,
         )
     rows = _rows_from_capability_data(result.data)
-    emit("agent.read.completed", {"capability": call.capability_id, "rowCount": len(rows)})
+    emit(
+        "agent.read.completed",
+        {
+            "tool": call.capability_id,
+            "capability": call.capability_id,
+            "rowCount": len(rows),
+            "output": {"rows": [dict(row) for row in rows], "rowCount": len(rows)},
+        },
+    )
     return QueryAttempt(
         sql=label,
         sql_hash=step_hash,
@@ -603,7 +637,11 @@ async def _dispatch_writes(
         idempotency_key = f"agent-write:{run_id}:{call.capability_id}:{index}"
         emit(
             "agent.write.started",
-            {"capability": call.capability_id, "input": dict(call.tool_input)},
+            {
+                "tool": call.capability_id,
+                "capability": call.capability_id,
+                "input": dict(call.tool_input),
+            },
         )
         try:
             with lf.tool_span(f"capability:{call.capability_id}", capability=call.capability_id):
@@ -623,7 +661,7 @@ async def _dispatch_writes(
         # the orchestrator for the owner's own SSE/webhook stream.
         emit(
             "agent.write.completed",
-            {"capability": call.capability_id, "output": result.data},
+            {"tool": call.capability_id, "capability": call.capability_id, "output": result.data},
         )
         outcomes.append(
             WriteOutcome(call.capability_id, "completed", result.summary, links=result.links)

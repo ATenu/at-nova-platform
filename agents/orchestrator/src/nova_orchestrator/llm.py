@@ -153,7 +153,10 @@ class OpenAIReasoner:
     def _structured(self, schema: type[_TModel], system: str, user: str) -> _TModel:
         from langchain_core.messages import HumanMessage, SystemMessage
 
-        runnable = self._llm.with_structured_output(schema)
+        # Tool calling over strict ``json_schema`` for broad backend
+        # compatibility (matches ``reason``'s ``bind_tools`` path) and to avoid
+        # strict-schema rejections / slow reasoning on OpenAI-compatible models.
+        runnable = self._llm.with_structured_output(schema, method="function_calling")
         result = runnable.invoke(
             [SystemMessage(content=system), HumanMessage(content=user)]
         )

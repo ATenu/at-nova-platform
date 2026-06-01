@@ -13,7 +13,7 @@ function validBody(overrides: Record<string, unknown> = {}) {
     runId: 'run-1',
     ownerSubject: 'sub-1',
     roles: ['support-operations-user'],
-    permissions: ['read-data'],
+    permissions: ['create-agent-run', 'read-sales'],
     capabilityAllowlist: ['data.query.select'],
     issuedAt: issuedAt.toISOString(),
     expiresAt: expiresAt.toISOString(),
@@ -47,11 +47,11 @@ describe('SnapshotClient.fetchVerified', () => {
     mockFetch(200, validBody());
     const result = await client.fetchVerified('run-1');
     expect(result.ownerSubject).toBe('sub-1');
-    expect(result.permissions).toContain('read-data');
+    expect(result.permissions).toContain('read-sales');
   });
 
   it('fails closed when the snapshot hash does not match (tampered fields)', async () => {
-    const tampered = { ...validBody(), permissions: ['read-data', 'write-sales'] };
+    const tampered = { ...validBody(), permissions: ['read-sales', 'write-sales'] };
     mockFetch(200, tampered);
     await expect(client.fetchVerified('run-1')).rejects.toThrow();
   });

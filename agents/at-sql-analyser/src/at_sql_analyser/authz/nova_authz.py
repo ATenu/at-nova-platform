@@ -9,16 +9,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-PERMISSIONS: tuple[str, ...] = ("read-customers", "write-customers", "create-issues", "read-issues", "write-issues", "read-sales", "write-sales", "read-permissions", "write-permissions", "read-actions", "write-actions", "read-sop", "write-sop", "read-users", "write-users", "read-data", "create-agent-run", "read-agent-run", "cancel-agent-run",)
+PERMISSIONS: tuple[str, ...] = ("read-customers", "write-customers", "create-issues", "read-issues", "write-issues", "read-sales", "write-sales", "read-permissions", "write-permissions", "read-actions", "write-actions", "read-sop", "write-sop", "read-users", "write-users", "create-agent-run", "read-agent-run", "cancel-agent-run",)
 
 ROLES: tuple[str, ...] = ("sales-user", "support-operations-user", "admin", "customer-support", "ops-compliance",)
 
 ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "sales-user": ("read-customers", "write-customers", "read-issues", "read-sales", "write-sales", "read-actions", "read-sop", "create-agent-run", "read-agent-run", "cancel-agent-run",),
-    "support-operations-user": ("read-customers", "write-customers", "read-issues", "write-issues", "read-sales", "read-actions", "write-actions", "read-sop", "read-data", "create-agent-run", "read-agent-run", "cancel-agent-run",),
-    "admin": ("read-customers", "write-customers", "create-issues", "read-issues", "write-issues", "read-sales", "write-sales", "read-permissions", "write-permissions", "read-actions", "write-actions", "read-sop", "write-sop", "read-users", "write-users", "read-data", "create-agent-run", "read-agent-run", "cancel-agent-run",),
+    "support-operations-user": ("read-customers", "write-customers", "read-issues", "write-issues", "read-sales", "read-actions", "write-actions", "read-sop", "create-agent-run", "read-agent-run", "cancel-agent-run",),
+    "admin": ("read-customers", "write-customers", "create-issues", "read-issues", "write-issues", "read-sales", "write-sales", "read-permissions", "write-permissions", "read-actions", "write-actions", "read-sop", "write-sop", "read-users", "write-users", "create-agent-run", "read-agent-run", "cancel-agent-run",),
     "customer-support": ("read-customers", "create-issues", "read-issues", "write-issues", "read-sales", "read-actions", "write-actions", "create-agent-run", "read-agent-run", "cancel-agent-run",),
-    "ops-compliance": ("read-sop", "write-sop", "read-data", "create-agent-run", "read-agent-run", "cancel-agent-run",),
+    "ops-compliance": ("read-sop", "write-sop", "create-agent-run", "read-agent-run", "cancel-agent-run",),
 }
 
 
@@ -254,7 +254,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         id="data.schema.describe",
         kind="mcp-tool",
         mode="read",
-        required_permissions=("read-data",),
+        required_permissions=("create-agent-run",),
         risk="low",
         resource_scoped=False,
         delegated=False,
@@ -263,7 +263,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDescriptor, ...] = (
         id="data.query.select",
         kind="mcp-tool",
         mode="read",
-        required_permissions=("read-data",),
+        required_permissions=("create-agent-run",),
         risk="low",
         resource_scoped=True,
         delegated=False,

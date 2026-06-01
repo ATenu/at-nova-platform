@@ -63,7 +63,7 @@ def _snapshot(allowlist: tuple[str, ...]) -> VerifiedSnapshot:
         run_id="run-1",
         owner_subject="user-1",
         roles=("ops-compliance",),
-        permissions=frozenset({"read-data"}),
+        permissions=frozenset({"create-agent-run", "read-sop"}),
         capability_allowlist=frozenset(allowlist),
         expires_at=datetime.now(UTC) + timedelta(minutes=5),
     )

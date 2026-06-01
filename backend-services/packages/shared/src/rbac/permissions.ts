@@ -24,12 +24,6 @@ export const PERMISSIONS = [
   'write-sop',
   'read-users',
   'write-users',
-  // Coarse gate for the free-query data layer (DB MCP server `run_select_query`
-  // and the `at-sql-analyser` read skill). It governs *use of* the SQL tooling;
-  // *which* data is exposed is constrained by the curated `mcp_read` view
-  // allowlist + column redaction, not by a permission explosion (decision D1).
-  // It never grants any write authority.
-  'read-data',
   // Agent-run lifecycle plumbing (NOT domain actions). These gate the
   // `/api/v1/agent-runs` surface only: opening a run, reading/streaming an
   // owned run, and cancelling an owned run. Granular "can this user do X"
@@ -79,7 +73,6 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
     'read-actions',
     'write-actions',
     'read-sop',
-    'read-data',
     'create-agent-run',
     'read-agent-run',
     'cancel-agent-run',
@@ -100,7 +93,6 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
     'write-sop',
     'read-users',
     'write-users',
-    'read-data',
     'create-agent-run',
     'read-agent-run',
     'cancel-agent-run',
@@ -108,7 +100,6 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
   'ops-compliance': [
     'read-sop',
     'write-sop',
-    'read-data',
     'create-agent-run',
     'read-agent-run',
     'cancel-agent-run',

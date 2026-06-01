@@ -64,9 +64,10 @@ def test_menu_excludes_mcp_tool_and_delegated_capabilities() -> None:
     assert menu == ()
 
 
-def test_read_umbrella_shown_when_read_data_present() -> None:
-    # read-data (the SQL mcp-tools) is itself enough underlying entitlement to
-    # surface the read umbrella, even without any structured read cap.
+def test_read_umbrella_shown_when_sql_tool_present() -> None:
+    # The free-form SQL mcp-tool (data.query.select) is itself enough underlying
+    # entitlement to surface the read umbrella, even without any structured read
+    # cap; per-view access is then governed by the MCP server.
     menu = _build_menu(frozenset({"data.analyse.read", "data.query.select"}))
     ids = {item.capability_id for item in menu}
     assert ids == {"data.analyse.read"}
@@ -111,7 +112,7 @@ def _registry_with_card(description: str, tags: tuple[str, ...]) -> AgentRegistr
 
 
 # Allowlist that surfaces the read umbrella: the umbrella itself + an underlying
-# entitled read cap (read-data) so ``_has_entitled_underlying`` is satisfied.
+# entitled read cap (the SQL mcp-tool) so ``_has_entitled_underlying`` is satisfied.
 _READ_ALLOWLIST = frozenset({"data.analyse.read", "data.query.select"})
 
 

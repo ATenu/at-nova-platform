@@ -15,7 +15,6 @@
     "write-sop",
     "read-users",
     "write-users",
-    "read-data",
     "create-agent-run",
     "read-agent-run",
     "cancel-agent-run"
@@ -49,7 +48,6 @@
       "read-actions",
       "write-actions",
       "read-sop",
-      "read-data",
       "create-agent-run",
       "read-agent-run",
       "cancel-agent-run"
@@ -70,7 +68,6 @@
       "write-sop",
       "read-users",
       "write-users",
-      "read-data",
       "create-agent-run",
       "read-agent-run",
       "cancel-agent-run"
@@ -78,7 +75,6 @@
     "ops-compliance": [
       "read-sop",
       "write-sop",
-      "read-data",
       "create-agent-run",
       "read-agent-run",
       "cancel-agent-run"
@@ -369,7 +365,7 @@
       "kind": "mcp-tool",
       "mode": "read",
       "requiredPermissions": [
-        "read-data"
+        "create-agent-run"
       ],
       "risk": "low",
       "resourceScoped": false,
@@ -380,7 +376,7 @@
       "kind": "mcp-tool",
       "mode": "read",
       "requiredPermissions": [
-        "read-data"
+        "create-agent-run"
       ],
       "risk": "low",
       "resourceScoped": true,

@@ -23,8 +23,15 @@ export interface DescribedView {
   readonly columns: readonly DescribedColumn[];
 }
 
-export function describeSchema(): DescribedView[] {
-  return MCP_READ_VIEWS.map((view) => ({
+/**
+ * When `allowedViewNames` is provided, the advertised surface is filtered to
+ * only those views (the caller's per-view entitlement), so the planner never
+ * sees — and therefore never queries — a view it is not allowed to read.
+ */
+export function describeSchema(allowedViewNames?: ReadonlySet<string>): DescribedView[] {
+  return MCP_READ_VIEWS.filter(
+    (view) => allowedViewNames === undefined || allowedViewNames.has(view.name),
+  ).map((view) => ({
     schema: MCP_READ_SCHEMA,
     name: view.name,
     description: view.description,
@@ -39,8 +46,12 @@ export function describeSchema(): DescribedView[] {
 }
 
 /** Compact view list (name + description + owner-scoping) for `list_views`. */
-export function listViews(): { schema: string; name: string; description: string; ownerScoped: boolean }[] {
-  return MCP_READ_VIEWS.map((view) => ({
+export function listViews(
+  allowedViewNames?: ReadonlySet<string>,
+): { schema: string; name: string; description: string; ownerScoped: boolean }[] {
+  return MCP_READ_VIEWS.filter(
+    (view) => allowedViewNames === undefined || allowedViewNames.has(view.name),
+  ).map((view) => ({
     schema: MCP_READ_SCHEMA,
     name: view.name,
     description: view.description,

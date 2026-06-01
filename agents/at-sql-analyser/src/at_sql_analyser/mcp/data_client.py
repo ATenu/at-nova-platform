@@ -9,6 +9,7 @@ untrusted data and can only ever reach the curated, server-validated views.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any, Protocol
 
 from ..auth.tokens import ServiceTokenClient
@@ -111,8 +112,44 @@ class McpDataClient:
         except Exception as exc:  # noqa: BLE001 - the data hop is an untrusted boundary
             raise DataClientError("data tool call failed") from exc
         if getattr(result, "isError", False):
-            raise DataClientError("data tool reported an error")
+            # Surface the server's caller-safe reason (e.g.
+            # "sql_rejected: Relation \"mcp_read.orders\" is not in the mcp_read
+            # allowlist.") so the harness records it and the LLM critique can
+            # self-correct, instead of looping on a generic failure. The message
+            # is curated server-side and never contains SQL text, params, or rows.
+            raise DataClientError(_error_detail(result) or "data tool reported an error")
         structured = getattr(result, "structuredContent", None)
         if structured is None:
             structured = getattr(result, "structured_content", None)
         return structured if isinstance(structured, dict) else {}
+
+
+def _error_detail(result: Any) -> str:
+    """Extract the caller-safe ``{error, message}`` an MCP tool returns on error.
+
+    The DB MCP server returns errors as a single text content part holding
+    ``{"error": <code>, "message": <safe message>}``. We parse that to a short,
+    bounded reason; anything unexpected yields an empty string (the caller then
+    falls back to a generic message). Never raises.
+    """
+    content = getattr(result, "content", None)
+    if not isinstance(content, list):
+        return ""
+    for item in content:
+        text = getattr(item, "text", None)
+        if not isinstance(text, str) or not text:
+            continue
+        try:
+            data = json.loads(text)
+        except (ValueError, TypeError):
+            return text[:256]
+        if isinstance(data, dict):
+            code = data.get("error")
+            message = data.get("message")
+            if isinstance(code, str) and isinstance(message, str):
+                return f"{code}: {message}"[:256]
+            if isinstance(message, str):
+                return message[:256]
+            if isinstance(code, str):
+                return code[:256]
+    return ""

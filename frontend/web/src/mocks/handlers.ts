@@ -539,14 +539,25 @@ export const handlers = [
         id: nextId('evt'),
         sequence: 4,
         type: 'agent.query.started',
-        payload: { sqlHash: 'sha256:demo' },
+        payload: {
+          tool: 'run_select_query',
+          sqlHash: 'sha256:demo',
+          input: { sql: 'SELECT count(*) AS total FROM mcp_read.sales', params: [] },
+        },
         createdAt: ts(),
       },
       {
         id: nextId('evt'),
         sequence: 5,
         type: 'agent.query.completed',
-        payload: { sqlHash: 'sha256:demo', rowCount: 1, truncated: false, error: false },
+        payload: {
+          tool: 'run_select_query',
+          sqlHash: 'sha256:demo',
+          rowCount: 1,
+          truncated: false,
+          error: false,
+          output: { rows: [{ total: 1 }], rowCount: 1, truncated: false },
+        },
         createdAt: ts(),
       },
       {

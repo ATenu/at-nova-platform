@@ -218,7 +218,7 @@ def make_snapshot(
         run_id="run-1",
         owner_subject="user-1",
         roles=roles,
-        permissions=frozenset({"read-data", "create-agent-run"}),
+        permissions=frozenset({"create-agent-run", "read-sop"}),
         capability_allowlist=frozenset(allowlist),
         expires_at=datetime.now(UTC) + timedelta(minutes=5),
     )

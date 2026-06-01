@@ -29,7 +29,8 @@ class ReadStep(BaseModel):
     tool families (or finishes):
       - ``"sql"``: run one free-form read-only SELECT (``sql``/``params``) over
         the curated ``mcp_read`` views (only offered when SQL is available, i.e.
-        the caller holds ``read-data``);
+        the caller holds ``data.query.select``; the views shown are limited to
+        those the caller's domain permissions entitle them to read);
       - ``"capability"``: invoke ONE entitled structured read capability
         (``capability_id`` from the authorized closed set, with ``input`` built
         from the goal/observations — e.g. resolve a name via ``customers.search``
@@ -133,7 +134,12 @@ class OpenAIReasoner:
     ) -> _TModel:
         from langchain_core.messages import HumanMessage, SystemMessage
 
-        runnable = self._llm.with_structured_output(schema)
+        # ``function_calling`` (tool calling) over strict ``json_schema``: the
+        # decision schemas carry free-form ``dict[str, Any]`` inputs, which the
+        # strict structured-output path rejects (additionalProperties must be
+        # false) and which makes reasoning backends think far longer. Tool
+        # calling is the broadly-compatible path the orchestrator already uses.
+        runnable = self._llm.with_structured_output(schema, method="function_calling")
         result = await runnable.ainvoke(
             [SystemMessage(content=system), HumanMessage(content=user)]
         )

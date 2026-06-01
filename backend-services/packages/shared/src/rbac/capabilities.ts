@@ -285,14 +285,17 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     delegated: true,
   },
   // --- Free-query data layer (DB MCP server + `at-sql-analyser`) -------------
-  // All gated by the single coarse `read-data` permission (decision D1); the
-  // exposed surface is further constrained by the curated `mcp_read` views +
-  // column redaction in the MCP server, not by a permission per view.
+  // These are reachable for any agent-run user (gated on the universal
+  // `create-agent-run`); they grant NO data by themselves. The authorization
+  // boundary is per VIEW: the DB MCP server maps each `mcp_read` view a query
+  // touches to its domain permission (`data-views.ts`, mirroring the REST routes)
+  // and re-checks it against the run's entitlement snapshot, exposing only the
+  // views the user is entitled to. This replaces the coarse `read-data` gate.
   {
     id: 'data.schema.describe',
     kind: 'mcp-tool',
     mode: 'read',
-    requiredPermissions: ['read-data'],
+    requiredPermissions: ['create-agent-run'],
     risk: 'low',
     resourceScoped: false,
   },
@@ -300,7 +303,7 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
     id: 'data.query.select',
     kind: 'mcp-tool',
     mode: 'read',
-    requiredPermissions: ['read-data'],
+    requiredPermissions: ['create-agent-run'],
     risk: 'low',
     resourceScoped: true,
   },
@@ -313,8 +316,9 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
   // the Node gateway / MCP server re-check it. Because they are mere entry
   // points, they are gated only on the universal `create-agent-run` permission
   // (every agent-using role holds it); they grant NO data access by themselves.
-  // The agent only exposes the free-form SQL sub-tools when the caller actually
-  // holds `data.query.select`/`data.schema.describe` (i.e. `read-data`).
+  // The free-form SQL sub-tools are exposed per VIEW: the MCP server only lets a
+  // query touch a `mcp_read` view when the caller holds that view's domain
+  // permission (see `data-views.ts`), so no data is reachable without it.
   {
     id: 'data.analyse.read',
     kind: 'agent-skill',
