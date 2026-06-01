@@ -24,7 +24,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -223,7 +223,10 @@ def _insert_idempotent(
             dedupe_key=dedupe_key,
             created_at=_now(),
         )
-        .on_conflict_do_nothing(index_elements=["dedupe_key"])
+        .on_conflict_do_nothing(
+            index_elements=["dedupe_key"],
+            index_where=text("dedupe_key IS NOT NULL"),
+        )
         .returning(AgentRunEvent.id)
     )
     inserted = session.execute(stmt).scalar_one_or_none()

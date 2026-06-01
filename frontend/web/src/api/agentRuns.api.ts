@@ -43,7 +43,12 @@ export function listConversationRuns(conversationId: string): Promise<readonly A
   );
 }
 
-/** Full user-visibility trace (tool/agent calls + IO) for a completed run. */
-export function getAgentRunTrace(runId: string): Promise<AgentRunTraceDto> {
-  return http.get<AgentRunTraceDto>(`/agent-runs/${runId}/trace`);
+/**
+ * Full trace (tool/agent calls + IO) for a completed run. `detailed` additionally
+ * requests node-execution and authz events (the full technical timeline) for the
+ * caller's own run; the default is the normal `user`-visibility trace.
+ */
+export function getAgentRunTrace(runId: string, detailed = false): Promise<AgentRunTraceDto> {
+  const suffix = detailed ? '?detail=full' : '';
+  return http.get<AgentRunTraceDto>(`/agent-runs/${runId}/trace${suffix}`);
 }

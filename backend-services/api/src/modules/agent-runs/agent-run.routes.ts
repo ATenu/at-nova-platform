@@ -10,6 +10,7 @@ import {
   listEventsQuerySchema,
   listRunsQuerySchema,
   runIdParamsSchema,
+  traceQuerySchema,
 } from './agent-run.schema';
 
 // The chat entrypoint (`POST /a2a/chat`) is the single way to create an agent
@@ -95,7 +96,7 @@ export function createAgentRunRouter(deps: AgentRunRouterDeps): Router {
     '/:runId/trace',
     deps.authenticate,
     authorize(streamEventsPolicy),
-    validateRequest({ params: runIdParamsSchema }),
+    validateRequest({ params: runIdParamsSchema, query: traceQuerySchema }),
     asyncHandler(controller.getTrace),
   );
 

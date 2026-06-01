@@ -64,7 +64,12 @@ function SubstepRow({ item }: { item: TraceItem }) {
         ) : (
           <span className="run-trace-substep-dot" aria-hidden />
         )}
-        <span className="run-trace-substep-line text-sm">{item.line}</span>
+        <span
+          className="run-trace-substep-line text-sm"
+          style={item.technical ? { opacity: 0.75, fontStyle: 'italic' } : undefined}
+        >
+          {item.line}
+        </span>
         {item.status ? <StatusBadge status={item.status} /> : null}
       </button>
       {hasIo && open ? (
@@ -159,14 +164,39 @@ function LifecycleSteps({ items }: { items: readonly TraceItem[] }) {
   );
 }
 
+function DetailToggle({ detailed, onToggle }: { detailed: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      className="run-trace-detail-toggle subtle text-sm"
+      onClick={onToggle}
+      aria-pressed={detailed}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+        background: 'none',
+        border: 'none',
+        cursor: 'pointer',
+        padding: 0,
+      }}
+    >
+      <Icon name="filter" size={12} />
+      {detailed ? 'Hide technical details' : 'Show technical details'}
+    </button>
+  );
+}
+
 function TraceViewBody({
   events,
   live,
+  detailed = false,
 }: {
   events: readonly AgentRunEventDto[];
   live?: boolean;
+  detailed?: boolean;
 }) {
-  const view = useMemo(() => buildTraceView(events), [events]);
+  const view = useMemo(() => buildTraceView(events, detailed), [events, detailed]);
   const hasContent = view.lifecycle.length > 0 || view.invocations.length > 0;
 
   if (!hasContent) {
@@ -228,19 +258,33 @@ function CollapsibleHeader({
   );
 }
 
-function RunTraceBody({ events, live }: { events: readonly AgentRunEventDto[]; live?: boolean }) {
-  return <TraceViewBody events={events} live={live ?? false} />;
+function RunTraceBody({
+  events,
+  live,
+  detailed,
+}: {
+  events: readonly AgentRunEventDto[];
+  live?: boolean;
+  detailed?: boolean;
+}) {
+  return <TraceViewBody events={events} live={live ?? false} detailed={detailed ?? false} />;
 }
 
 export function LiveRunTrace({
   events,
+  detailed = false,
+  onToggleDetailed,
   children,
 }: {
   events: readonly AgentRunEventDto[];
+  /** Whether the live stream is currently delivering the full technical timeline. */
+  detailed?: boolean;
+  /** Toggle the technical detail level (re-subscribes the SSE stream). */
+  onToggleDetailed?: () => void;
   children?: ReactNode;
 }) {
   const [open, setOpen] = useState(true);
-  const summary = useMemo(() => summarizeEvents(events), [events]);
+  const summary = useMemo(() => summarizeEvents(events, detailed), [events, detailed]);
   const label = events.length > 0 ? 'Activity' : 'Working…';
   return (
     <div className="run-trace">
@@ -252,7 +296,10 @@ export function LiveRunTrace({
       />
       {open ? (
         <div className="run-trace-body">
-          <RunTraceBody events={events} live />
+          {onToggleDetailed ? (
+            <DetailToggle detailed={detailed} onToggle={onToggleDetailed} />
+          ) : null}
+          <RunTraceBody events={events} live detailed={detailed} />
           {children}
         </div>
       ) : null}
@@ -263,9 +310,10 @@ export function LiveRunTrace({
 export function RunTracePanel({ runId }: { runId: string }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
+  const [detailed, setDetailed] = useState(false);
   const trace = useQuery({
-    queryKey: queryKeys.runTrace(runId),
-    queryFn: () => getAgentRunTrace(runId),
+    queryKey: queryKeys.runTrace(runId, detailed),
+    queryFn: () => getAgentRunTrace(runId, detailed),
     enabled: open,
   });
 
@@ -273,11 +321,11 @@ export function RunTracePanel({ runId }: { runId: string }) {
     if (trace.data?.events) {
       return trace.data.events;
     }
-    const cached = queryClient.getQueryData<AgentRunTraceDto>(queryKeys.runTrace(runId));
+    const cached = queryClient.getQueryData<AgentRunTraceDto>(queryKeys.runTrace(runId, detailed));
     return cached?.events ?? [];
-  }, [trace.data, queryClient, runId]);
+  }, [trace.data, queryClient, runId, detailed]);
 
-  const summary = useMemo(() => summarizeEvents(events), [events]);
+  const summary = useMemo(() => summarizeEvents(events, detailed), [events, detailed]);
   const label = events.length > 0 ? 'Activity' : 'View tool & agent activity';
 
   return (
@@ -290,6 +338,7 @@ export function RunTracePanel({ runId }: { runId: string }) {
       />
       {open ? (
         <div className="run-trace-body">
+          <DetailToggle detailed={detailed} onToggle={() => setDetailed((value) => !value)} />
           {trace.isLoading && events.length === 0 ? (
             <span className="subtle text-sm">Loading activity…</span>
           ) : trace.isError && events.length === 0 ? (
@@ -297,7 +346,7 @@ export function RunTracePanel({ runId }: { runId: string }) {
               {toUserMessage(trace.error)}
             </span>
           ) : (
-            <RunTraceBody events={events} />
+            <RunTraceBody events={events} detailed={detailed} />
           )}
         </div>
       ) : null}

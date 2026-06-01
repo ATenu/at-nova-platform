@@ -177,7 +177,7 @@ describe('AgentRunService ownership (default deny)', () => {
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 
-  it('returns an owned run trace with only its user-visibility events', async () => {
+  it('returns an owned run trace with only its user-visibility events by default', async () => {
     const listAllUserEvents = jest.fn(async () => [
       {
         id: 'evt-1',
@@ -194,7 +194,27 @@ describe('AgentRunService ownership (default deny)', () => {
     expect(trace.runId).toBe('run-9');
     expect(trace.events).toHaveLength(1);
     expect(trace.events[0]!.type).toBe('tool.call.completed');
-    expect(listAllUserEvents).toHaveBeenCalledWith('run-9');
+    // Default scope: `user`-visibility only (no internal/security events).
+    expect(listAllUserEvents).toHaveBeenCalledWith('run-9', false);
+  });
+
+  it('includes internal/security events in the trace only when detailed is requested', async () => {
+    const listAllUserEvents = jest.fn(async () => []);
+    const { service } = buildService({
+      runs: { listAllUserEvents } as unknown as Partial<AgentRunRepository>,
+    });
+    await service.getRunTrace('run-9', authFor('kc-1', ['sales-user']), true);
+    // The owner opted into the full technical timeline (node + authz events).
+    expect(listAllUserEvents).toHaveBeenCalledWith('run-9', true);
+  });
+
+  it('passes the detailed flag through to the event batch read', async () => {
+    const listUserEventsAfter = jest.fn(async () => []);
+    const { service } = buildService({
+      runs: { listUserEventsAfter } as unknown as Partial<AgentRunRepository>,
+    });
+    await service.getEventBatch('run-9', 5, authFor('kc-1', ['sales-user']), true);
+    expect(listUserEventsAfter).toHaveBeenCalledWith('run-9', 5, expect.any(Number), true);
   });
 });
 

@@ -167,14 +167,21 @@ export class AgentRunRepository {
   }
 
   /**
-   * All `user`-visibility events for a run, in order. Paginates internally so a
-   * long trace is fully returned. `internal`/`security` events never leave here.
+   * All events for a run, in order. Paginates internally so a long trace is
+   * fully returned. By default only `user`-visibility events are returned;
+   * `includeNonUser` additionally returns `internal` (node execution) +
+   * `security` (authz) events for the owner's full technical timeline.
    */
-  async listAllUserEvents(runId: string): Promise<AgentRunEvent[]> {
+  async listAllUserEvents(runId: string, includeNonUser = false): Promise<AgentRunEvent[]> {
     const all: AgentRunEvent[] = [];
     let afterSequence = 0;
     for (;;) {
-      const batch = await this.listUserEventsAfter(runId, afterSequence, USER_EVENT_PAGE_SIZE);
+      const batch = await this.listUserEventsAfter(
+        runId,
+        afterSequence,
+        USER_EVENT_PAGE_SIZE,
+        includeNonUser,
+      );
       if (batch.length === 0) {
         break;
       }
@@ -188,22 +195,26 @@ export class AgentRunRepository {
   }
 
   /**
-   * Stream-facing read: only `user`-visibility events strictly after the given
-   * sequence, ordered ascending. `internal`/`security` events never leave here.
+   * Stream-facing read: events strictly after the given sequence, ordered
+   * ascending. By default only `user`-visibility events are returned (the normal
+   * browser channel). `includeNonUser` widens the read to `internal` +
+   * `security` events too — opt-in, owner-only (ownership is enforced upstream)
+   * for the full technical timeline.
    */
   async listUserEventsAfter(
     runId: string,
     afterSequence: number,
     limit: number,
+    includeNonUser = false,
   ): Promise<AgentRunEvent[]> {
-    return this.events
+    const query = this.events
       .createQueryBuilder('event')
       .where('event.run_id = :runId', { runId })
-      .andWhere('event.visibility = :visibility', { visibility: 'user' })
-      .andWhere('event.sequence > :afterSequence', { afterSequence })
-      .orderBy('event.sequence', 'ASC')
-      .limit(limit)
-      .getMany();
+      .andWhere('event.sequence > :afterSequence', { afterSequence });
+    if (!includeNonUser) {
+      query.andWhere('event.visibility = :visibility', { visibility: 'user' });
+    }
+    return query.orderBy('event.sequence', 'ASC').limit(limit).getMany();
   }
 
   /**

@@ -17,6 +17,12 @@ export interface TraceItem {
   readonly status?: InvocationStatus;
   readonly input?: unknown;
   readonly output?: unknown;
+  /**
+   * Marks a low-level technical step (graph-node execution or an authorization
+   * decision) only surfaced in the full/detailed view. Technical steps are not
+   * counted as tool invocations in the summary badge and are styled subtly.
+   */
+  readonly technical?: boolean;
 }
 
 /**
@@ -55,6 +61,10 @@ const AGENT_INTERNAL_PREFIXES = [
   'agent.query.',
   'agent.read.',
   'agent.write.',
+  // Full/detailed view only (delivered when `detail=full`): graph-node
+  // execution markers and the agent's own authorization decisions.
+  'agent.node.',
+  'agent.authz.',
 ] as const;
 
 function payloadString(payload: Record<string, unknown>, key: string): string {
@@ -85,7 +95,7 @@ function substepStatus(type: string): InvocationStatus {
   if (type.endsWith('.started')) {
     return 'running';
   }
-  if (type.endsWith('.completed') || type.endsWith('.loaded')) {
+  if (type.endsWith('.completed') || type.endsWith('.loaded') || type.endsWith('.allowed')) {
     return 'completed';
   }
   return 'failed';
@@ -126,13 +136,18 @@ export function describeEvent(event: AgentRunEventDto): Omit<TraceItem, 'id'> | 
   const capability = payloadString(payload, 'capability');
   const agent = payloadString(payload, 'agent');
   const summary = payloadString(payload, 'summary');
+  const node = payloadString(payload, 'node');
+  const reasonCode = payloadString(payload, 'reasonCode') || payloadString(payload, 'reason');
   const rowCount = typeof payload.rowCount === 'number' ? payload.rowCount : null;
+  const ms = typeof payload.ms === 'number' ? payload.ms : null;
   switch (event.type) {
     case 'run.accepted':
     case 'run.started':
       return { line: 'Starting…', kind: 'lifecycle' };
     case 'planner.started':
       return { line: 'Planning your request…', kind: 'lifecycle' };
+    case 'planner.completed':
+      return { line: 'Plan ready.', kind: 'lifecycle', technical: true };
     case 'tool.call.started':
       return {
         line: capability ? `Running ${capability}…` : 'Running a step…',
@@ -215,6 +230,40 @@ export function describeEvent(event: AgentRunEventDto): Omit<TraceItem, 'id'> | 
         kind: 'tool',
         input: payload.input,
       };
+    case 'agent.task.received':
+      return { line: 'Agent received the task.', kind: 'agent', technical: true };
+    case 'agent.completed':
+      return { line: 'Agent reasoning complete.', kind: 'agent', technical: true };
+    case 'agent.node.started':
+      return {
+        line: node ? `Entering "${node}"…` : 'Entering a step…',
+        kind: 'agent',
+        technical: true,
+      };
+    case 'agent.node.completed':
+      return {
+        line: node
+          ? `"${node}" done${ms !== null ? ` (${ms} ms)` : ''}`
+          : 'Step done.',
+        kind: 'agent',
+        technical: true,
+      };
+    case 'authz.allowed':
+    case 'agent.authz.allowed':
+      return {
+        line: `Authorized${capability ? ` ${capability}` : ''}.`,
+        kind: 'agent',
+        technical: true,
+      };
+    case 'authz.denied':
+    case 'agent.authz.denied':
+      return {
+        line: `Authorization denied${capability ? ` for ${capability}` : ''}${
+          reasonCode ? ` (${reasonCode})` : ''
+        }.`,
+        kind: 'agent',
+        technical: true,
+      };
     case 'run.failed':
       return { line: 'The run failed.', kind: 'lifecycle' };
     case 'run.canceled':
@@ -227,11 +276,14 @@ export function describeEvent(event: AgentRunEventDto): Omit<TraceItem, 'id'> | 
 }
 
 /** Build the ordered, renderable item list from a run's events. */
-export function toTraceItems(events: readonly AgentRunEventDto[]): readonly TraceItem[] {
+export function toTraceItems(
+  events: readonly AgentRunEventDto[],
+  detailed = false,
+): readonly TraceItem[] {
   const items: TraceItem[] = [];
   for (const event of events) {
     const described = describeEvent(event);
-    if (described) {
+    if (described && (detailed || !described.technical)) {
       items.push({ id: event.id, ...described });
     }
   }
@@ -242,7 +294,10 @@ export function toTraceItems(events: readonly AgentRunEventDto[]): readonly Trac
  * Group raw SSE/webhook events into lifecycle lines and merged tool/agent
  * invocations so each call appears once with its input, output, and status.
  */
-export function buildTraceView(events: readonly AgentRunEventDto[]): TraceView {
+export function buildTraceView(
+  events: readonly AgentRunEventDto[],
+  detailed = false,
+): TraceView {
   const lifecycle: TraceItem[] = [];
   const invocations: TraceInvocation[] = [];
   let openTool: TraceInvocation | null = null;
@@ -255,14 +310,14 @@ export function buildTraceView(events: readonly AgentRunEventDto[]): TraceView {
 
   const pushLifecycle = (event: AgentRunEventDto): void => {
     const described = describeEvent(event);
-    if (described) {
+    if (described && (detailed || !described.technical)) {
       lifecycle.push({ id: event.id, ...described });
     }
   };
 
   const addAgentSubstep = (event: AgentRunEventDto): void => {
     const described = describeEvent(event);
-    if (!described) {
+    if (!described || (!detailed && described.technical)) {
       return;
     }
     const status = substepStatus(event.type);
@@ -411,11 +466,18 @@ export function buildTraceView(events: readonly AgentRunEventDto[]): TraceView {
  * are the real tool invocations the agent performed on the user's behalf.
  * Agents are counted once per `agent.call.*` invocation.
  */
-export function summarizeEvents(events: readonly AgentRunEventDto[]): TraceSummary {
-  const view = buildTraceView(events);
+export function summarizeEvents(
+  events: readonly AgentRunEventDto[],
+  detailed = false,
+): TraceSummary {
+  const view = buildTraceView(events, detailed);
   let toolCount = 0;
   let agentCount = 0;
   let substepCount = 0;
+  // Technical sub-steps (graph-node execution, authz decisions) are not real
+  // tool invocations, so they are excluded from the tool badge even when the
+  // detailed view surfaces them.
+  let toolSubstepCount = 0;
   for (const inv of view.invocations) {
     if (inv.kind === 'tool') {
       toolCount += 1;
@@ -423,9 +485,10 @@ export function summarizeEvents(events: readonly AgentRunEventDto[]): TraceSumma
       agentCount += 1;
     }
     substepCount += inv.substeps.length;
+    toolSubstepCount += inv.substeps.filter((step) => !step.technical).length;
   }
   return {
-    toolCount: toolCount + substepCount,
+    toolCount: toolCount + toolSubstepCount,
     agentCount,
     stepCount: view.lifecycle.length + view.invocations.length + substepCount,
   };

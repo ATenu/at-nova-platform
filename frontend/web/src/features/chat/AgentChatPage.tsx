@@ -49,6 +49,10 @@ export function AgentChatPage() {
   const activeId = searchParams.get('c');
   const [pending, setPending] = useState<PendingTurn | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
+  // Opt-in full technical timeline (graph-node execution + authz decisions) for
+  // the live stream. Toggling re-subscribes the SSE stream from sequence 0 so
+  // earlier technical events are backfilled. Default off keeps the normal view.
+  const [detailed, setDetailed] = useState(false);
   const threadRef = useRef<HTMLDivElement>(null);
 
   const conversations = useQuery({ queryKey: queryKeys.conversations, queryFn: listConversations });
@@ -77,7 +81,7 @@ export function AgentChatPage() {
     return map;
   }, [conversationRuns.data]);
 
-  const run = useAgentRunEvents(runId, { enabled: runId !== null });
+  const run = useAgentRunEvents(runId, { enabled: runId !== null, detailed });
 
   const setActive = (id: string | null) => {
     setPending(null);
@@ -122,7 +126,10 @@ export function AgentChatPage() {
       return;
     }
     if (run.events.length > 0) {
-      queryClient.setQueryData(queryKeys.runTrace(runId), {
+      // Seed under the key matching the live detail level so the persisted panel
+      // renders immediately without re-polling, and the default (`user`) view is
+      // never seeded with technical events.
+      queryClient.setQueryData(queryKeys.runTrace(runId, detailed), {
         runId,
         status: terminalStatusFromEvents(run.events),
         events: run.events,
@@ -133,7 +140,7 @@ export function AgentChatPage() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversation(activeId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversationRuns(activeId) });
     }
-  }, [runId, run.isComplete, run.events, activeId, queryClient]);
+  }, [runId, run.isComplete, run.events, activeId, queryClient, detailed]);
 
   const send = (message: string) => {
     setPending({ text: message, status: 'sending' });
@@ -248,7 +255,11 @@ export function AgentChatPage() {
                     <Icon name="sparkles" size={16} />
                   </span>
                   <div className="stack" style={{ gap: 6, minWidth: 0, flex: 1 }}>
-                    <LiveRunTrace events={run.events}>
+                    <LiveRunTrace
+                      events={run.events}
+                      detailed={detailed}
+                      onToggleDetailed={() => setDetailed((value) => !value)}
+                    >
                       {run.error ? (
                         <span className="text-sm" style={{ color: 'var(--danger)', marginTop: 6 }}>
                           {run.error}

@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from typing import Any, Literal, Protocol
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
@@ -579,6 +580,22 @@ class SqlAnalystExecutor(AgentExecutor):
             await updater.failed(message=message)
 
 
+def _attach_registrar_lifespan(app: Starlette, registrar: AgentRegistrar) -> None:
+    """Run registrar start/stop via Starlette lifespan (required on Starlette 1.x)."""
+    existing = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(app_instance: Starlette):
+        await registrar.start()
+        try:
+            async with existing(app_instance) as state:
+                yield state
+        finally:
+            await registrar.stop()
+
+    app.router.lifespan_context = lifespan
+
+
 def create_app(
     config: AgentConfig | None = None,
     *,
@@ -696,6 +713,5 @@ def create_app(
             heartbeat_s=cfg.registration_heartbeat_s,
         )
     if the_registrar is not None:
-        app.add_event_handler("startup", the_registrar.start)
-        app.add_event_handler("shutdown", the_registrar.stop)
+        _attach_registrar_lifespan(app, the_registrar)
     return app

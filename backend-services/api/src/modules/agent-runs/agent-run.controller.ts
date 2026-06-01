@@ -9,6 +9,7 @@ import {
   type ListEventsQuery,
   type ListRunsQuery,
   type RunIdParams,
+  type TraceQuery,
 } from './agent-run.schema';
 
 const SSE_POLL_INTERVAL_MS = 1000;
@@ -51,10 +52,15 @@ export class AgentRunController {
     res.json(await this.service.listRunsForConversation(conversationId, auth));
   };
 
-  /** Full user-visibility trace (tool/agent calls + IO) for a completed run. */
+  /**
+   * Full trace (tool/agent calls + IO) for a completed run. `?detail=full`
+   * additionally returns node-execution and authz events for the owner's own
+   * run (ownership enforced in the service).
+   */
   getTrace = async (req: Request, res: Response): Promise<void> => {
     const { runId } = req.params as unknown as RunIdParams;
-    res.json(await this.service.getRunTrace(runId, this.requireAuth(req)));
+    const { detail } = req.query as unknown as TraceQuery;
+    res.json(await this.service.getRunTrace(runId, this.requireAuth(req), detail === 'full'));
   };
 
   cancel = async (req: Request, res: Response): Promise<void> => {
@@ -77,9 +83,12 @@ export class AgentRunController {
     if (!Number.isFinite(cursor) || cursor < 0) {
       cursor = 0;
     }
+    // Opt-in full technical timeline (node execution + authz). Owner-only; the
+    // browser channel stays `user`-only unless `detail=full` is explicitly set.
+    const detailed = query.detail === 'full';
 
     // Ownership is enforced before any stream bytes are written.
-    const initial = await this.service.getEventBatch(runId, cursor, auth);
+    const initial = await this.service.getEventBatch(runId, cursor, auth, detailed);
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -129,7 +138,7 @@ export class AgentRunController {
           return;
         }
         try {
-          const batch = await this.service.getEventBatch(runId, cursor, auth);
+          const batch = await this.service.getEventBatch(runId, cursor, auth, detailed);
           send(batch);
           res.write(': keep-alive\n\n');
           if (isTerminal(batch.run.status as AgentRunStatus)) {

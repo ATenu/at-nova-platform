@@ -110,10 +110,26 @@ export class AgentRunService {
     return toAgentRunDto(updated);
   }
 
-  /** Ownership-checked batch read of user-visible events (used by the SSE loop). */
-  async getEventBatch(runId: string, afterSequence: number, auth: AuthContext): Promise<EventBatch> {
+  /**
+   * Ownership-checked batch read of run events (used by the SSE loop). Defaults
+   * to `user`-visibility only; `detailed` additionally includes `internal`
+   * (node execution) + `security` (authz) events for the owner's full technical
+   * timeline. Ownership is always enforced first, so a caller only ever sees
+   * their own run's events regardless of the visibility scope requested.
+   */
+  async getEventBatch(
+    runId: string,
+    afterSequence: number,
+    auth: AuthContext,
+    detailed = false,
+  ): Promise<EventBatch> {
     const run = await this.requireOwnedRun(runId, auth);
-    const events = await this.runs.listUserEventsAfter(runId, afterSequence, MAX_EVENT_BATCH);
+    const events = await this.runs.listUserEventsAfter(
+      runId,
+      afterSequence,
+      MAX_EVENT_BATCH,
+      detailed,
+    );
     return { run, events: events.map(toAgentRunEventDto) };
   }
 
@@ -132,14 +148,21 @@ export class AgentRunService {
   }
 
   /**
-   * Ownership-checked full `user`-visibility trace for one run (every tool/agent
-   * call with its bounded, secret-redacted input and output). Returned as JSON
-   * so a completed turn's activity can be rendered without re-opening the SSE
-   * stream. `internal`/`security` events are never included.
+   * Ownership-checked full trace for one run (every tool/agent call with its
+   * bounded, secret-redacted input and output). Returned as JSON so a completed
+   * turn's activity can be rendered without re-opening the SSE stream. Defaults
+   * to `user`-visibility only; `detailed` additionally includes `internal`
+   * (node execution) + `security` (authz allow/deny) events for the owner's full
+   * technical timeline. Payloads are already worker-redacted (no secrets/PII);
+   * ownership is enforced first so this only ever returns the caller's own run.
    */
-  async getRunTrace(runId: string, auth: AuthContext): Promise<AgentRunTraceDto> {
+  async getRunTrace(
+    runId: string,
+    auth: AuthContext,
+    detailed = false,
+  ): Promise<AgentRunTraceDto> {
     const run = await this.requireOwnedRun(runId, auth);
-    const events = await this.runs.listAllUserEvents(runId);
+    const events = await this.runs.listAllUserEvents(runId, detailed);
     return { runId: run.id, status: run.status, events: events.map(toAgentRunEventDto) };
   }
 

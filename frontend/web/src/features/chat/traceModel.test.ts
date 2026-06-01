@@ -95,6 +95,40 @@ describe('traceModel.buildTraceView', () => {
     expect(view.invocations[0]!.substeps).toHaveLength(1);
     expect(view.invocations[0]!.substeps[0]!.status).toBe('failed');
   });
+
+  it('hides technical (node/authz) sub-steps in the default view, shows them when detailed', () => {
+    const events: AgentRunEventDto[] = [
+      event({ type: 'agent.call.started', sequence: 1, payload: { agent: 'sql-analyst' } }),
+      event({ type: 'agent.node.started', sequence: 2, payload: { node: 'plan_read', iteration: 0 } }),
+      event({
+        type: 'agent.node.completed',
+        sequence: 3,
+        payload: { node: 'plan_read', ms: 12, outcome: 'ok' },
+      }),
+      event({
+        type: 'agent.authz.allowed',
+        sequence: 4,
+        payload: { capability: 'data.analyse.read', decision: 'allow', reasonCode: 'allowed' },
+      }),
+      event({ type: 'agent.query.started', sequence: 5, payload: { sqlHash: 'abc' } }),
+      event({ type: 'agent.query.completed', sequence: 6, payload: { rowCount: 1 } }),
+      event({ type: 'agent.call.completed', sequence: 7, payload: { agent: 'sql-analyst' } }),
+    ];
+
+    // Default: only the user-facing query sub-step is shown.
+    const plain = buildTraceView(events);
+    expect(plain.invocations[0]!.substeps).toHaveLength(1);
+    expect(plain.invocations[0]!.substeps[0]!.line).toBe('Read 1 row(s).');
+
+    // Detailed: node execution + authz decision are surfaced too, marked technical.
+    const full = buildTraceView(events, true);
+    const substeps = full.invocations[0]!.substeps;
+    expect(substeps.length).toBeGreaterThan(1);
+    const nodeStep = substeps.find((step) => step.line.includes('plan_read'));
+    expect(nodeStep?.technical).toBe(true);
+    const authzStep = substeps.find((step) => step.line.startsWith('Authorized'));
+    expect(authzStep?.technical).toBe(true);
+  });
 });
 
 describe('traceModel.summarizeEvents', () => {
@@ -132,6 +166,27 @@ describe('traceModel.summarizeEvents', () => {
     expect(summary.toolCount).toBe(2);
     expect(summary.agentCount).toBe(1);
     expect(summaryLabel(summary)).toBe('2 tools · 1 agent');
+  });
+
+  it('does not count technical (node/authz) sub-steps as tools in the detailed view', () => {
+    const events: AgentRunEventDto[] = [
+      event({ type: 'agent.call.started', sequence: 1, payload: { agent: 'sql-analyst' } }),
+      event({ type: 'agent.node.started', sequence: 2, payload: { node: 'plan_read' } }),
+      event({ type: 'agent.node.completed', sequence: 3, payload: { node: 'plan_read', ms: 5 } }),
+      event({
+        type: 'agent.authz.allowed',
+        sequence: 4,
+        payload: { capability: 'data.analyse.read', reasonCode: 'allowed' },
+      }),
+      event({ type: 'agent.query.started', sequence: 5, payload: { sqlHash: 'abc' } }),
+      event({ type: 'agent.query.completed', sequence: 6, payload: { rowCount: 1 } }),
+      event({ type: 'agent.call.completed', sequence: 7, payload: { agent: 'sql-analyst' } }),
+    ];
+
+    const summary = summarizeEvents(events, true);
+    // Only the real MCP query counts as a tool; node + authz steps do not.
+    expect(summary.toolCount).toBe(1);
+    expect(summary.agentCount).toBe(1);
   });
 
   it('counts a terminal-only trace (e.g. SSE resumed past the started frame)', () => {

@@ -32,6 +32,13 @@ export interface UseAgentRunEventsOptions {
   readonly afterSequence?: number;
   /** Pause/disable the subscription without unmounting. */
   readonly enabled?: boolean;
+  /**
+   * Request the full technical timeline (node execution + authz events) in
+   * addition to the normal `user`-visibility events. Owner-only and enforced
+   * server-side. Toggling this reconnects the stream from sequence 0 so any
+   * technical events emitted before the toggle are backfilled (deduped by id).
+   */
+  readonly detailed?: boolean;
 }
 
 interface ParsedFrame {
@@ -68,17 +75,21 @@ export function useAgentRunEvents(
   runId: string | null,
   options: UseAgentRunEventsOptions = {},
 ): UseAgentRunEventsResult {
-  const { afterSequence = 0, enabled = true } = options;
+  const { afterSequence = 0, enabled = true, detailed = false } = options;
   const [events, setEvents] = useState<readonly AgentRunEventDto[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isComplete, setIsComplete] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Reset accumulated state when the target run changes (render-phase reset, the
-  // pattern React recommends over a dedicated reset effect).
+  // Reset accumulated state when the target run OR the detail scope changes
+  // (render-phase reset, the pattern React recommends over a dedicated reset
+  // effect). Resetting on a detail change forces a clean reconnect from
+  // sequence 0 so the buffer matches exactly the requested visibility scope.
   const previousRunIdRef = useRef<string | null>(runId);
-  if (previousRunIdRef.current !== runId) {
+  const previousDetailedRef = useRef<boolean>(detailed);
+  if (previousRunIdRef.current !== runId || previousDetailedRef.current !== detailed) {
     previousRunIdRef.current = runId;
+    previousDetailedRef.current = detailed;
     setEvents([]);
     setIsComplete(false);
     setError(null);
@@ -143,7 +154,8 @@ export function useAgentRunEvents(
 
       let response: Response;
       try {
-        response = await fetch(`${url}?afterSequence=${cursor}`, {
+        const detailParam = detailed ? '&detail=full' : '';
+        response = await fetch(`${url}?afterSequence=${cursor}${detailParam}`, {
           method: 'GET',
           headers,
           signal: controller.signal,
@@ -214,7 +226,7 @@ export function useAgentRunEvents(
         clearTimeout(reconnectTimer);
       }
     };
-  }, [runId, enabled, afterSequence]);
+  }, [runId, enabled, afterSequence, detailed]);
 
   return { events, isStreaming, isComplete, error };
 }
