@@ -12,7 +12,18 @@ interleaves to resolve references and answer the question:
                                                                   │
                                               satisfied / budget ─▶ compose ─▶ END
 
-    start ─▶ plan_writes ─▶ dispatch_writes ─▶ compose_writes ─▶ END   (write intent)
+The write path is itself a bounded resolve→act loop: the planner may dispatch
+entitled READ capabilities to resolve inputs the request names only by handle
+(e.g. an action title ─▶ its id) before emitting the final, fully-populated
+writes — so a write whose ids are not stated up front is resolved from the DB
+autonomously rather than failing:
+
+    start ─▶ plan_write ─┬─▶ resolve_read ──▶ (loop back) ─┐   (write intent)
+                ▲        │                                  │
+                └────────┴───── (resolve, bounded) ◀────────┘
+                         │
+                         ├─▶ dispatch_writes ─▶ compose_writes ─▶ END
+                         └─▶ compose_writes (nothing to do) ─▶ END
 
 Discipline (rule 040): typed state, node outputs validated before they touch
 state, explicit termination, max-iteration/query/time + no-progress guards, and
@@ -160,7 +171,7 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
         return {"started_monotonic": deps.clock(), "iteration": 0, "write_outcomes": []}
 
     def route_intent(state: GraphState) -> str:
-        return "plan_writes" if state.get("intent") == "write" else "load_schema"
+        return "plan_write" if state.get("intent") == "write" else "load_schema"
 
     # -- read path ----------------------------------------------------------
     async def load_schema(state: GraphState) -> dict[str, Any]:
@@ -320,20 +331,70 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
         return {"answer": None, "status": "failed", "reason": state.get("reason") or "no_answer"}
 
     # -- write path ---------------------------------------------------------
-    async def plan_writes(state: GraphState) -> dict[str, Any]:
-        authorized = _authorized_write_ids(deps.authorize)
-        plan = await deps.reasoner.plan_writes(
-            goal=state["goal"], authorized_writes=authorized
+    async def plan_write(state: GraphState) -> dict[str, Any]:
+        # Bounded resolve→act loop. A write input the capability needs (e.g. an
+        # action id) is often only named by a human handle (a title) in the
+        # request; the planner may dispatch entitled READ capabilities to resolve
+        # it from the DB before emitting the final writes. The same guards that
+        # bound the read loop bound resolution here; on exhaustion we stop
+        # without writing rather than dispatch an under-specified call.
+        iteration = int(state.get("iteration", 0))
+        guard = evaluate_guards(
+            iterations=iteration,
+            attempts=tuple(state.get("attempts", [])),
+            elapsed_s=deps.clock() - float(state.get("started_monotonic", 0.0)),
+            limits=deps.limits,
         )
-        calls = [
-            CapabilityCall(
-                capability_id=item.capability_id,
-                tool_input=dict(item.input),
-                rationale=item.rationale,
+        if guard.stop:
+            return {"route": "compose_writes", "reason": guard.reason,
+                    "write_calls": [], "pending_read": None}
+        authorized_reads = _authorized_read_ids(deps.authorize)
+        authorized_writes = _authorized_write_ids(deps.authorize)
+        step = await deps.reasoner.plan_write_step(
+            goal=state["goal"],
+            authorized_reads=authorized_reads,
+            authorized_writes=authorized_writes,
+            history=tuple(state.get("attempts", [])),
+        )
+        if step.action == "read" and step.read_capability_id in authorized_reads:
+            # Layer A: only an entitled read id may resolve a value; it is
+            # re-gated again (Layer B) in resolve_read before any dispatch.
+            call = CapabilityCall(
+                capability_id=step.read_capability_id,
+                tool_input=dict(step.read_input),
+                rationale=step.rationale,
             )
-            for item in plan.writes
-        ][: deps.limits.max_queries]
-        return {"write_calls": calls}
+            return {"route": "resolve_read", "pending_read": call,
+                    "iteration": iteration + 1}
+        if step.action == "write" and step.writes:
+            calls = [
+                CapabilityCall(
+                    capability_id=item.capability_id,
+                    tool_input=dict(item.input),
+                    rationale=item.rationale,
+                )
+                for item in step.writes
+            ][: deps.limits.max_queries]
+            return {"route": "dispatch_writes", "write_calls": calls,
+                    "pending_read": None}
+        return {"route": "compose_writes", "write_calls": [], "pending_read": None}
+
+    async def resolve_read(state: GraphState) -> dict[str, Any]:
+        # Reuse the read path's dispatch helper so a write-time resolution read is
+        # re-gated (Layer B), idempotency-keyed, and audited with the same
+        # PII-safe events as any read, then loop back to plan_write with the rows.
+        call = state.get("pending_read")
+        if call is None:
+            return {"route": "plan_write"}
+        attempt = await _dispatch_read(
+            call=call,
+            authorize=deps.authorize,
+            capability_client=deps.capability_client,
+            run_id=state.get("run_id", ""),
+            index=len(state.get("attempts", [])),
+            emit=emit,
+        )
+        return {"route": "plan_write", "attempts": [attempt], "pending_read": None}
 
     async def dispatch_writes(state: GraphState) -> dict[str, Any]:
         calls = state.get("write_calls", [])
@@ -372,13 +433,14 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
     builder.add_node("execute", instrument("execute", execute))
     builder.add_node("critique", instrument("critique", critique))
     builder.add_node("compose", instrument("compose", compose))
-    builder.add_node("plan_writes", instrument("plan_writes", plan_writes))
+    builder.add_node("plan_write", instrument("plan_write", plan_write))
+    builder.add_node("resolve_read", instrument("resolve_read", resolve_read))
     builder.add_node("dispatch_writes", instrument("dispatch_writes", dispatch_writes))
     builder.add_node("compose_writes", instrument("compose_writes", compose_writes))
 
     builder.add_edge(START, "start")
     builder.add_conditional_edges(
-        "start", route_intent, {"load_schema": "load_schema", "plan_writes": "plan_writes"}
+        "start", route_intent, {"load_schema": "load_schema", "plan_write": "plan_write"}
     )
     builder.add_edge("load_schema", "plan_read")
     builder.add_conditional_edges(
@@ -395,7 +457,16 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
         "critique", _route, {"plan_read": "plan_read", "compose": "compose"}
     )
     builder.add_edge("compose", END)
-    builder.add_edge("plan_writes", "dispatch_writes")
+    builder.add_conditional_edges(
+        "plan_write",
+        _route,
+        {
+            "resolve_read": "resolve_read",
+            "dispatch_writes": "dispatch_writes",
+            "compose_writes": "compose_writes",
+        },
+    )
+    builder.add_edge("resolve_read", "plan_write")
     builder.add_edge("dispatch_writes", "compose_writes")
     builder.add_edge("compose_writes", END)
     return builder.compile()

@@ -18,7 +18,7 @@ from at_sql_analyser.harness.llm import (
     ReadCritique,
     ReadStep,
     WriteItem,
-    WritePlan,
+    WriteStep,
 )
 from at_sql_analyser.harness.state import QueryAttempt, SchemaView, WriteOutcome
 from at_sql_analyser.tools.capability_client import CapabilityClientError, CapabilityResult
@@ -50,10 +50,14 @@ class FakeReasoner:
         queries: Sequence[ReadStep] = (),
         answer: str = "done",
         writes: Sequence[WriteItem] = (),
+        resolve_reads: Sequence[tuple[str, dict[str, Any]]] = (),
     ) -> None:
         self._queries = list(queries)
         self._answer = answer
         self._writes = list(writes)
+        # Write-path resolution reads, proposed one per loop turn (indexed by
+        # history length) BEFORE the scripted writes are emitted.
+        self._resolve_reads = list(resolve_reads)
         self.seen_authorized_writes: list[tuple[str, ...]] = []
         self.seen_authorized_reads: list[tuple[str, ...]] = []
         self.seen_sql_enabled: list[bool] = []
@@ -87,11 +91,27 @@ class FakeReasoner:
     async def compose(self, *, goal: str, history: Sequence[QueryAttempt]) -> str:
         return self._answer
 
-    async def plan_writes(
-        self, *, goal: str, authorized_writes: Sequence[str]
-    ) -> WritePlan:
+    async def plan_write_step(
+        self,
+        *,
+        goal: str,
+        authorized_reads: Sequence[str],
+        authorized_writes: Sequence[str],
+        history: Sequence[QueryAttempt],
+    ) -> WriteStep:
         self.seen_authorized_writes.append(tuple(authorized_writes))
-        return WritePlan(writes=list(self._writes))
+        self.seen_authorized_reads.append(tuple(authorized_reads))
+        index = len(history)
+        if index < len(self._resolve_reads):
+            capability_id, tool_input = self._resolve_reads[index]
+            return WriteStep(
+                action="read",
+                read_capability_id=capability_id,
+                read_input=dict(tool_input),
+            )
+        if self._writes:
+            return WriteStep(action="write", writes=list(self._writes))
+        return WriteStep(action="finish")
 
     async def compose_writes(
         self, *, goal: str, outcomes: Sequence[WriteOutcome]

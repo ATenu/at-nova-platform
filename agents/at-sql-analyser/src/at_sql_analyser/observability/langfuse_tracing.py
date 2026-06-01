@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -171,6 +172,49 @@ def _valid_hex(value: str | None, length: int) -> str | None:
     return None
 
 
+def _safe_exit(observation: Any, *exc_info: Any) -> None:
+    """Close a native observation, never letting a tracing error escape the task."""
+    try:
+        observation.__exit__(*exc_info)
+    except Exception:  # noqa: BLE001 - tracing teardown must never break a task
+        logger.warning("langfuse observation teardown failed; continuing", exc_info=False)
+
+
+@contextmanager
+def _observation(**kwargs: Any) -> Iterator[Any | None]:
+    """Enter a native Langfuse observation with fail-soft tracing semantics.
+
+    Tracing *setup/teardown* failures degrade to a no-op so a broken, disabled,
+    or unreachable Langfuse never breaks a task (rules 010/040). Exceptions raised
+    by the wrapped body are deliberately NOT swallowed: they are recorded on the
+    span (via ``__exit__``) and re-raised so the caller's own error handling runs.
+
+    Swallowing a body exception here and then yielding again — as the previous
+    implementation did — re-entered the generator after ``throw()`` and raised
+    ``RuntimeError: generator didn't stop after throw()``, which crashed the
+    entire agent task on ANY tool/capability failure (e.g. a rejected write
+    input) instead of letting the graph mark the step failed and respond.
+    """
+    client = get_tracer()
+    if client is None:
+        yield None
+        return
+    try:
+        observation = client.start_as_current_observation(**kwargs)
+        span = observation.__enter__()
+    except Exception:  # noqa: BLE001 - tracing setup must never break a task
+        logger.warning("langfuse observation setup failed; continuing untraced", exc_info=False)
+        yield None
+        return
+    try:
+        yield span
+    except BaseException:
+        _safe_exit(observation, *sys.exc_info())
+        raise
+    else:
+        _safe_exit(observation, None, None, None)
+
+
 @contextmanager
 def agent_trace(
     *,
@@ -184,39 +228,28 @@ def agent_trace(
     Uses the W3C trace context passed over A2A so the agent's spans nest under
     the orchestrator's run trace. Falls back to a deterministic trace id seeded
     from ``run_id`` when the orchestrator did not supply one (e.g. direct call).
+    A tracing failure degrades to a no-op; exceptions from the wrapped body
+    propagate unchanged.
     """
-    client = get_tracer()
-    if client is None:
-        yield None
-        return
     trace_id = _valid_hex(parent_trace_id, 32) or trace_id_for(run_id)
     parent_span = _valid_hex(parent_observation_id, 16) or (
         run_id.replace("-", "")[:16] or "0"
     ).ljust(16, "0")
     trace_context = {"trace_id": trace_id, "parent_span_id": parent_span}
-    try:
-        with client.start_as_current_observation(
-            as_type="span", name=name, trace_context=trace_context
-        ) as span:
-            yield span
-    except Exception:  # noqa: BLE001 - a tracing failure must never break a task
-        logger.warning("langfuse agent_trace failed; continuing untraced", exc_info=False)
-        yield None
+    with _observation(
+        as_type="span", name=name, trace_context=trace_context
+    ) as span:
+        yield span
 
 
 @contextmanager
 def tool_span(name: str, **metadata: Any) -> Iterator[None]:
-    """Native span around a single tool/MCP/capability invocation."""
-    client = get_tracer()
-    if client is None:
-        yield None
-        return
-    try:
-        with client.start_as_current_observation(
-            as_type="span", name=name, metadata=metadata or None
-        ):
-            yield None
-    except Exception:  # noqa: BLE001
+    """Native span around a single tool/MCP/capability invocation.
+
+    Fail-soft on tracing; the wrapped call's own exceptions propagate so the
+    step-level error handling (mark failed, emit event, audit) still runs.
+    """
+    with _observation(as_type="span", name=name, metadata=metadata or None):
         yield None
 
 

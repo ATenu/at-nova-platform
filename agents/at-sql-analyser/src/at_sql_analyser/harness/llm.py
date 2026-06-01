@@ -13,6 +13,8 @@ sees; Layer B (the server + code gate) re-checks every action regardless.
 
 from __future__ import annotations
 
+import json
+import logging
 from collections.abc import Sequence
 from typing import Any, Literal, Protocol, TypeVar
 
@@ -20,6 +22,8 @@ from pydantic import BaseModel, Field, SecretStr
 
 from .. import prompts
 from .state import QueryAttempt, SchemaView, WriteOutcome
+
+logger = logging.getLogger("at_sql_analyser.harness.llm")
 
 
 class ReadStep(BaseModel):
@@ -62,8 +66,71 @@ class WriteItem(BaseModel):
     rationale: str = ""
 
 
-class WritePlan(BaseModel):
+class WriteStep(BaseModel):
+    """One step of the write planner's bounded resolve→act loop.
+
+    A write request often references records by a human handle (a name/title),
+    not the id the typed capability needs. The write path therefore RESOLVES
+    missing inputs autonomously by chaining entitled structured READ capabilities
+    (e.g. ``actions.list`` -> read the matching id from its results) before it
+    emits the final, fully-populated writes. Each step is one of:
+      - ``"read"``: dispatch ONE entitled read capability to resolve a value;
+      - ``"write"``: emit the final write plan (>= 1 fully-populated item);
+      - ``"finish"``: nothing applies, or a required value cannot be resolved.
+    Both reads and writes are independently re-gated (Layer B) before dispatch.
+    """
+
+    action: Literal["read", "write", "finish"]
+    # action == "read": ONE entitled read capability + its (resolved) input.
+    read_capability_id: str = ""
+    read_input: dict[str, Any] = Field(default_factory=dict)
+    # action == "write": the final, fully-populated write plan.
     writes: list[WriteItem] = Field(default_factory=list)
+    rationale: str = ""
+
+
+class _WriteItemLLM(BaseModel):
+    """Model-facing write item.
+
+    The capability ``input`` is requested as a JSON-object STRING rather than a
+    free-form ``dict``: a structured-output (function-calling) schema renders a
+    bare ``dict[str, Any]`` as an object with no described properties, which
+    gpt-4o-mini fills reliably at the TOP level but leaves EMPTY when nested
+    inside a list (``writes[].input``) — silently producing an un-executable
+    write the typed gateway then rejects (HTTP 400). A string field is filled
+    reliably even when nested; we parse it back into a dict here.
+    """
+
+    capability_id: str = ""
+    input_json: str = "{}"
+    rationale: str = ""
+
+
+class _WriteStepLLM(BaseModel):
+    """Model-facing write step (see ``WriteStep``). Inputs are JSON strings for
+    the same reliability reason as ``_WriteItemLLM``."""
+
+    action: Literal["read", "write", "finish"] = "finish"
+    read_capability_id: str = ""
+    read_input_json: str = "{}"
+    writes: list[_WriteItemLLM] = Field(default_factory=list)
+    rationale: str = ""
+
+
+def _parse_input_json(raw: str) -> dict[str, Any]:
+    """Parse the model's JSON-string input into a dict, failing soft to ``{}``.
+
+    The result is re-validated against the capability's typed schema by the Node
+    tool gateway, so a malformed object here simply yields an empty input that
+    the gateway will reject — never an unsafe call."""
+    if not raw or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("write planner returned non-JSON input; treating as empty")
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 _TModel = TypeVar("_TModel", bound=BaseModel)
@@ -89,9 +156,14 @@ class Reasoner(Protocol):
 
     async def compose(self, *, goal: str, history: Sequence[QueryAttempt]) -> str: ...
 
-    async def plan_writes(
-        self, *, goal: str, authorized_writes: Sequence[str]
-    ) -> WritePlan: ...
+    async def plan_write_step(
+        self,
+        *,
+        goal: str,
+        authorized_reads: Sequence[str],
+        authorized_writes: Sequence[str],
+        history: Sequence[QueryAttempt],
+    ) -> WriteStep: ...
 
     async def compose_writes(
         self, *, goal: str, outcomes: Sequence[WriteOutcome]
@@ -193,14 +265,45 @@ class OpenAIReasoner:
             prompts.COMPOSE_SYSTEM, prompts.compose_user(goal=goal, history=history)
         )
 
-    async def plan_writes(
-        self, *, goal: str, authorized_writes: Sequence[str]
-    ) -> WritePlan:
-        return await self._structured(
-            WritePlan,
-            prompts.PLAN_WRITES_SYSTEM,
-            prompts.plan_writes_user(goal=goal, authorized_writes=authorized_writes),
+    async def plan_write_step(
+        self,
+        *,
+        goal: str,
+        authorized_reads: Sequence[str],
+        authorized_writes: Sequence[str],
+        history: Sequence[QueryAttempt],
+    ) -> WriteStep:
+        step = await self._structured(
+            _WriteStepLLM,
+            prompts.PLAN_WRITE_SYSTEM,
+            prompts.plan_write_user(
+                goal=goal,
+                authorized_reads=authorized_reads,
+                authorized_writes=authorized_writes,
+                history=history,
+            ),
         )
+        if step.action == "write":
+            writes = [
+                WriteItem(
+                    capability_id=item.capability_id,
+                    input=_parse_input_json(item.input_json),
+                    rationale=item.rationale,
+                )
+                for item in step.writes
+                if item.capability_id
+            ]
+            if writes:
+                return WriteStep(action="write", writes=writes, rationale=step.rationale)
+            return WriteStep(action="finish", rationale=step.rationale)
+        if step.action == "read" and step.read_capability_id:
+            return WriteStep(
+                action="read",
+                read_capability_id=step.read_capability_id,
+                read_input=_parse_input_json(step.read_input_json),
+                rationale=step.rationale,
+            )
+        return WriteStep(action="finish", rationale=step.rationale)
 
     async def compose_writes(
         self, *, goal: str, outcomes: Sequence[WriteOutcome]

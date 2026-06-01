@@ -14,6 +14,7 @@ from at_sql_analyser.harness.guards import GuardLimits
 from at_sql_analyser.harness.llm import WriteItem
 from at_sql_analyser.harness.state import TaskInput
 from at_sql_analyser.observability.tracing import scrub
+from at_sql_analyser.tools.capability_client import CapabilityResult
 
 from .fakes import FakeCapabilityClient, FakeReasoner
 
@@ -111,6 +112,68 @@ async def test_mixed_results_complete_when_any_succeeds() -> None:
         client=client,
     )
     result = await run_task(_task(), deps)
+    assert result.status == "completed"
+
+
+async def test_write_resolves_missing_id_via_read_then_dispatches() -> None:
+    # The request names the target by title (no id). The planner first RESOLVES
+    # the id with an entitled read capability, then dispatches the write — the
+    # resolve read runs before the write, and both are audited.
+    seen: list[str] = []
+    cap = FakeCapabilityClient(
+        results={
+            "actions.list": CapabilityResult(
+                summary="1 action",
+                data={"items": [{"id": "act-123", "title": "Arrange maintenance slot"}]},
+            )
+        }
+    )
+    reasoner = FakeReasoner(
+        resolve_reads=[("actions.list", {})],
+        writes=[
+            WriteItem(
+                capability_id="actions.addComment",
+                input={"actionId": "act-123", "comment": "Following up."},
+            )
+        ],
+    )
+    deps = GraphDeps(
+        reasoner=reasoner,
+        limits=LIMITS,
+        capability_client=cap,
+        authorize=_allow_all,
+        on_event=lambda t, _p: seen.append(t),
+    )
+    result = await run_task(_task(), deps)
+    assert result.status == "completed"
+    # The resolving read was dispatched first, then the write.
+    assert [capability_id for capability_id, _ in cap.calls] == [
+        "actions.list",
+        "actions.addComment",
+    ]
+    assert "agent.read.completed" in seen
+    assert "agent.write.completed" in seen
+
+
+async def test_write_resolution_is_bounded_and_fails_closed() -> None:
+    # A planner that keeps asking to resolve (never finishing) must be stopped by
+    # the guards without ever dispatching an under-specified write.
+    cap = FakeCapabilityClient()
+    reasoner = FakeReasoner(
+        resolve_reads=[("actions.list", {})] * 50,  # never reaches the write
+        writes=[WriteItem(capability_id="actions.addComment", input={})],
+    )
+    deps = GraphDeps(
+        reasoner=reasoner,
+        limits=LIMITS,
+        capability_client=cap,
+        authorize=_allow_all,
+        on_event=lambda _t, _p: None,
+    )
+    result = await run_task(_task(), deps)
+    # No write dispatched; the loop terminated on a guard and composed gracefully.
+    assert all(capability_id == "actions.list" for capability_id, _ in cap.calls)
+    assert "actions.addComment" not in [capability_id for capability_id, _ in cap.calls]
     assert result.status == "completed"
 
 
