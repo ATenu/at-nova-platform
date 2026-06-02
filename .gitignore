@@ -26,6 +26,9 @@ npm-debug.log*
 # Generated quality reports
 test-quality/nova_agentic_quality_report_*.xlsx
 
+# Local-only planning (not published to GitHub)
+design-planning/
+
 # Editor / OS
 .DS_Store
 Thumbs.db
