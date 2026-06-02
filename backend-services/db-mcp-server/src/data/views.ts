@@ -96,7 +96,8 @@ export const MCP_READ_VIEWS: readonly ViewDescriptor[] = [
   },
   {
     name: 'customer_issues',
-    description: 'Customer issues (status/timeline; free-text description excluded).',
+    description:
+      'Customer issues (status/timeline; free-text description excluded). Valid status values: in_assistance, rejected, completed.',
     ownerScoped: false,
     columns: [
       { name: 'id', type: 'uuid', sensitivity: PUBLIC },
@@ -109,7 +110,8 @@ export const MCP_READ_VIEWS: readonly ViewDescriptor[] = [
   },
   {
     name: 'issue_actions',
-    description: 'Issue actions (title + status + ownership; description excluded).',
+    description:
+      'Issue actions (title + status + ownership; description excluded). Valid status values: pending, in_progress, completed, rejected.',
     ownerScoped: false,
     columns: [
       { name: 'id', type: 'uuid', sensitivity: PUBLIC },
@@ -155,7 +157,8 @@ export const MCP_READ_VIEWS: readonly ViewDescriptor[] = [
   },
   {
     name: 'my_assigned_actions',
-    description: 'Issue actions assigned to the acting subject (per-session owner-scoped).',
+    description:
+      'Issue actions assigned to the acting subject (per-session owner-scoped). Valid status values: pending, in_progress, completed, rejected.',
     ownerScoped: true,
     columns: [
       { name: 'id', type: 'uuid', sensitivity: PUBLIC },

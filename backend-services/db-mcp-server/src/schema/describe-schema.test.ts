@@ -18,6 +18,11 @@ describe('describeSchema', () => {
     expect(mine?.ownerScoped).toBe(true);
   });
 
+  it('lists valid status values in the description so the planner uses real enum labels', () => {
+    const actions = describeSchema().find((view) => view.name === 'issue_actions');
+    expect(actions?.description).toContain('in_progress');
+  });
+
   it('filters to only the caller-entitled views when an allowlist is given', () => {
     const allowed = new Set(['sales', 'products']);
     const views = describeSchema(allowed);

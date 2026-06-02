@@ -140,6 +140,22 @@ export function AgentChatPage() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversation(activeId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversationRuns(activeId) });
     }
+    // A completed run may have written to any domain via `data.act.write`, but
+    // the `user`-visibility stream does not enumerate which. Invalidate the
+    // domain data caches so background agent writes surface without a manual
+    // refresh. Failed/canceled runs are skipped (no committed writes expected).
+    if (terminalStatusFromEvents(run.events) === 'completed') {
+      for (const key of [
+        queryKeys.actions,
+        queryKeys.issues,
+        queryKeys.sales,
+        queryKeys.customers,
+        queryKeys.sops,
+        queryKeys.products,
+      ]) {
+        void queryClient.invalidateQueries({ queryKey: key });
+      }
+    }
   }, [runId, run.isComplete, run.events, activeId, queryClient, detailed]);
 
   const send = (message: string) => {

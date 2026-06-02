@@ -1,5 +1,5 @@
 import { ActionComment, IssueAction, type IssueActionStatus } from '@nova/database';
-import type { DataSource, Repository } from 'typeorm';
+import type { DataSource, FindOptionsWhere, Repository } from 'typeorm';
 import type { PageRequest } from '../../http/pagination';
 
 export interface ActionListFilter extends PageRequest {
@@ -37,28 +37,29 @@ export class ActionRepository {
   }
 
   async findPaginated(filter: ActionListFilter): Promise<ActionListResult> {
-    const query = this.actions
-      .createQueryBuilder('action')
-      .leftJoinAndSelect('action.assignedOwner', 'assignedOwner')
-      .leftJoinAndSelect('action.updatedBy', 'updatedBy');
-
+    const where: FindOptionsWhere<IssueAction> = {};
     if (filter.status) {
-      query.andWhere('action.status = :status', { status: filter.status });
+      where.status = filter.status;
     }
     if (filter.assignedOwnerId) {
-      query.andWhere('action.assigned_owner_id = :ownerId', { ownerId: filter.assignedOwnerId });
+      where.assignedOwnerId = filter.assignedOwnerId;
     }
     if (filter.issueId) {
-      query.andWhere('action.issue_id = :issueId', { issueId: filter.issueId });
+      where.issueId = filter.issueId;
     }
 
-    query
-      .orderBy('action.createdDate', 'DESC')
-      .addOrderBy('action.id', 'DESC')
-      .skip((filter.page - 1) * filter.pageSize)
-      .take(filter.pageSize);
-
-    const [items, total] = await query.getManyAndCount();
+    const [items, total] = await this.actions.findAndCount({
+      where,
+      relations: {
+        assignedOwner: true,
+        updatedBy: true,
+        comments: { user: true },
+        dependencies: true,
+      },
+      order: { createdDate: 'DESC', id: 'DESC', comments: { datetime: 'ASC' } },
+      skip: (filter.page - 1) * filter.pageSize,
+      take: filter.pageSize,
+    });
     return { items, total };
   }
 
