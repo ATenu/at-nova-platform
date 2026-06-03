@@ -15,7 +15,6 @@ from nova_orchestrator import graph as graph_module
 from nova_orchestrator.agent_client import AgentEvent
 from nova_orchestrator.agent_state import AgentStateStore, HistoryEntry
 from nova_orchestrator.agents import AgentDescriptor, AgentRegistry, CardSkill
-from nova_orchestrator.authz.nova_authz import CAPABILITY_CATALOG
 from nova_orchestrator.authz.snapshot import EntitlementSnapshot
 from nova_orchestrator.capability_guide import _TOOL_SPECS
 from nova_orchestrator.dag import Observation
@@ -36,6 +35,7 @@ from nova_orchestrator.graph import (
 )
 from nova_orchestrator.llm import ReasonDecision
 
+from ._rbac_fixture import SEED_CAPABILITIES as CAPABILITY_CATALOG
 from .fakes import FakeReasoner
 from .test_agent_state import _FakeRedis
 

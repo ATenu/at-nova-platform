@@ -1,7 +1,8 @@
-"""Authorization parity layer (mirrors `@nova/shared` via the generated registry).
+"""Dynamic, DB-driven authorization layer (mirrors the API's RbacRegistry).
 
-`nova_authz.py` is GENERATED from the canonical TypeScript registry by
-`agents/orchestrator/scripts/generate_nova_authz.py`; the CI parity gate fails
-on any drift. `registry.py` and `policy_gate.py` are byte-for-byte the same logic
-the orchestrator worker uses, so the agent's Layer B decisions are identical.
+`rbac_registry.py` fetches the effective authorization policy from the Node
+control plane at `GET /internal/rbac/registry` and publishes it as the
+process-wide active registry. `registry.py` and `policy_gate.py` read that policy,
+so the agent's Layer B decisions are identical to the worker's and the control
+plane's. Fail closed when no policy is loaded (startup or outage).
 """

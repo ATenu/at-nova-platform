@@ -83,10 +83,32 @@ async def test_per_action_denial_blocks_dispatch() -> None:
     assert client.calls == []  # never dispatched a denied capability
 
 
-async def test_no_actions_completes_gracefully() -> None:
-    result = await run_task(_task(), _deps(writes=[], authorize=_allow_all))
+async def test_no_entitled_writes_completes_without_dispatch() -> None:
+    """When RBAC grants no concrete write capabilities, nothing is dispatched."""
+
+    def _reads_only(capability_id: str) -> tuple[bool, str]:
+        from at_sql_analyser.authz.registry import get_capability
+
+        cap = get_capability(capability_id)
+        if cap is not None and cap.mode == "write" and cap.delegated:
+            return False, "missing_permission"
+        return True, "allowed"
+
+    result = await run_task(_task(), _deps(writes=[], authorize=_reads_only))
     assert result.status == "completed"
     assert result.answer == "No actions were required."
+
+
+async def test_planner_finish_with_entitled_writes_fails_closed() -> None:
+    """Entitled writes exist but the planner never emits one → fail, not a no-op success."""
+    result = await run_task(_task(), _deps(writes=[], authorize=_allow_all))
+    assert result.status == "failed"
+    assert result.reason in {
+        "iteration_budget_exhausted",
+        "query_budget_exhausted",
+        "no_progress",
+        "no_write_executed",
+    }
 
 
 async def test_gateway_error_fails_closed() -> None:
@@ -171,10 +193,10 @@ async def test_write_resolution_is_bounded_and_fails_closed() -> None:
         on_event=lambda _t, _p: None,
     )
     result = await run_task(_task(), deps)
-    # No write dispatched; the loop terminated on a guard and composed gracefully.
+    # No write dispatched; the loop terminated on a guard and failed closed.
     assert all(capability_id == "actions.list" for capability_id, _ in cap.calls)
     assert "actions.addComment" not in [capability_id for capability_id, _ in cap.calls]
-    assert result.status == "completed"
+    assert result.status == "failed"
 
 
 async def test_write_event_traces_stay_pii_free() -> None:

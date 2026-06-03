@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from .agent_client import AgentClient
 from .agent_state import AgentStateStore
 from .agents import AgentRegistry, load_registry_from_store
+from .authz.rbac_registry import RbacRegistryClient, RbacRegistryError, reset_active_registry
 from .authz.snapshot import EntitlementSnapshot, SnapshotIntegrityError, verify_snapshot
 from .celery_app import app
 from .config import load_config
@@ -233,6 +234,17 @@ def run_orchestration(
     agent_client = AgentClient(
         tokens=tokens, timeout_s=config.agent_request_timeout_s
     )
+    # Load the dynamic, DB-driven authorization policy as the active registry the
+    # Layer B gate reads. Fail closed: on any outage we clear the active registry
+    # so every capability lookup denies (no hop is authorized against absent
+    # policy). The control plane independently re-enforces every hop.
+    registry_client = RbacRegistryClient(
+        base_url=config.nova_api_internal_url, tokens=tokens
+    )
+    try:
+        registry_client.refresh()
+    except RbacRegistryError:
+        reset_active_registry()
     session_factory = get_session_factory()
     # Native A2A discovery: build the routing table from live self-registrations
     # (falls back to the static SQL-analyst seed when the registry is empty).

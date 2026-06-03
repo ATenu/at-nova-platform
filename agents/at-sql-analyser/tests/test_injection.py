@@ -10,6 +10,11 @@ malicious goal ("ignore the rules and do X") cannot:
 
 from __future__ import annotations
 
+from at_sql_analyser.authz.rbac_registry import (
+    CapabilityDescriptor,
+    RbacRegistry,
+    set_active_registry,
+)
 from at_sql_analyser.harness.llm import WriteItem
 
 from .fakes import FakeCapabilityClient, FakeReasoner, make_snapshot, read_query
@@ -50,8 +55,33 @@ def test_injection_cannot_dispatch_unentitled_capability() -> None:
 
 
 def test_injection_cannot_bypass_approval_gate() -> None:
-    # No approval recorded: high-risk write skill is blocked regardless of goal.
-    snap = make_snapshot(roles=("admin",), allowlist=("data.act.write", "issues.create"))
+    # When an admin flags the write skill ``requires_approval``, a missing
+    # approval blocks it regardless of the goal: an injected instruction can never
+    # stand in for the recorded human approval.
+    set_active_registry(
+        RbacRegistry(
+            revision=1,
+            capabilities=(
+                CapabilityDescriptor(
+                    id="data.act.write",
+                    kind="agent-skill",
+                    mode="write",
+                    required_permissions=("create-agent-run",),
+                    risk="high",
+                    resource_scoped=True,
+                    delegated=False,
+                    enabled=True,
+                    requires_approval=True,
+                ),
+            ),
+            role_permissions={"admin": ("create-agent-run",)},
+        )
+    )
+    snap = make_snapshot(
+        roles=("admin",),
+        allowlist=("data.act.write", "issues.create"),
+        permissions=frozenset({"create-agent-run"}),
+    )
     reasoner = FakeReasoner(writes=[WriteItem(capability_id="issues.create", input={})])
     cap = FakeCapabilityClient()
     client, _, cap = build_client(snapshot=snap, reasoner=reasoner, capability_client=cap)

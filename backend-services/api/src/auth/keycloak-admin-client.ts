@@ -193,6 +193,51 @@ export class KeycloakAdminClient {
     return (await response.json()) as KeycloakRealmRole;
   }
 
+  /**
+   * Create a realm role. Idempotent: a 409 (already exists) resolves to the
+   * existing role so role provisioning can be retried safely.
+   */
+  async createRealmRole(name: string, description?: string | null): Promise<KeycloakRealmRole> {
+    const response = await this.authedFetch('/roles', {
+      method: 'POST',
+      body: JSON.stringify({ name, ...(description ? { description } : {}) }),
+    });
+    if (response.status === 409) {
+      const existing = await this.getRealmRole(name);
+      if (existing) {
+        return existing;
+      }
+    }
+    if (!response.ok && response.status !== 201) {
+      throw new KeycloakAdminError('Failed to create the Keycloak realm role.', response.status);
+    }
+    const created = await this.getRealmRole(name);
+    if (!created) {
+      throw new KeycloakAdminError('Keycloak did not return the created realm role.');
+    }
+    return created;
+  }
+
+  async updateRealmRole(name: string, description: string | null): Promise<void> {
+    const response = await this.authedFetch(`/roles/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ name, description: description ?? '' }),
+    });
+    if (!response.ok && response.status !== 204) {
+      throw new KeycloakAdminError('Failed to update the Keycloak realm role.', response.status);
+    }
+  }
+
+  /** Delete a realm role. A 404 is treated as success (already absent). */
+  async deleteRealmRole(name: string): Promise<void> {
+    const response = await this.authedFetch(`/roles/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok && response.status !== 204 && response.status !== 404) {
+      throw new KeycloakAdminError('Failed to delete the Keycloak realm role.', response.status);
+    }
+  }
+
   async getUserRealmRoles(userId: string): Promise<readonly string[]> {
     const response = await this.authedFetch(
       `/users/${encodeURIComponent(userId)}/role-mappings/realm`,

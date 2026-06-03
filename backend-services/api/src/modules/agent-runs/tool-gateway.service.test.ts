@@ -5,6 +5,7 @@ import type { AgentRunRepository, RunWithEntitlement, ToolAuditInput } from './a
 import type { ConversationRepository } from '../chat/conversation.repository';
 import type { CapabilityServices } from './capability-executor';
 import { buildEntitlementSnapshot } from './entitlement-snapshot';
+import { getActiveRegistry } from '../../rbac/registry-holder';
 
 function silentLogger(): Logger {
   const noop = (): void => {};
@@ -29,6 +30,7 @@ function runWithEntitlement(roles: TestRole[]): RunWithEntitlement {
     ownerUserId: 'user-1',
     roles,
     permissions: permissionsForRoles(roles),
+    resolveCapabilityAllowlist: (permissions) => getActiveRegistry().capabilityAllowlist(permissions),
     ttlSeconds: 3600,
   });
   const entitlement = {
@@ -79,7 +81,9 @@ function harness(found: RunWithEntitlement | null): Harness {
       listIssues: async () => ({ items: [], total: 0 }),
       updateIssue: async () => ({ id: 'issue-1', status: 'completed' }),
     },
-    actions: {},
+    actions: {
+      addComment: jest.fn(async () => ({ id: 'cm-1', comment: 'on it', datetime: new Date().toISOString() })),
+    },
     sops: {},
   } as unknown as CapabilityServices;
   const service = new ToolGatewayService(runs, conversations, services, silentLogger());
@@ -169,6 +173,20 @@ describe('ToolGatewayService', () => {
         'snapshotHash',
       ].sort(),
     );
+  });
+
+  it('executes actions.addComment for an entitled role using the snapshot owner user id', async () => {
+    const { service, audits } = harness(runWithEntitlement(['support-operations-user']));
+    const result = await service.executeCapability({
+      runId: 'run-1',
+      capabilityId: 'actions.addComment',
+      input: {
+        actionId: '11111111-1111-1111-1111-111111111111',
+        comment: 'on it',
+      },
+    });
+    expect(result.capabilityId).toBe('actions.addComment');
+    expect(audits.at(-1)).toMatchObject({ decision: 'allow', capability: 'actions.addComment' });
   });
 
   it('fails closed on the entitlement endpoint when the snapshot is tampered', async () => {

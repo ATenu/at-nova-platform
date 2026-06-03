@@ -1,8 +1,8 @@
 """Advertised skills for the Agent Card — mirrors the shared capability catalog.
 
 The agent never invents skills: each entry's id and required permission match a
-capability in `nova_authz` (the generated parity registry). The Agent Card
-advertises these so the orchestrator's steering layer can match intents, but
+capability in the dynamic, DB-driven RBAC registry (fetched at runtime). The Agent
+Card advertises these so the orchestrator's steering layer can match intents, but
 authorization is always decided by the snapshot + Layer B gate, never by the card.
 
 The read skill's description is composed at startup from the DB MCP server's live

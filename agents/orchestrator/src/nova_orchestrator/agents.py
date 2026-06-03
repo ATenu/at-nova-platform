@@ -5,8 +5,9 @@ Native A2A discovery: agents self-register their Agent Card (see the gateway
 run time from the live registrations. The card is trusted for *discovery* -
 which agent/URL serves a skill, plus the human-facing menu text - but never for
 authorization: a skill is routable only if it resolves to a real ``agent-skill``
-capability in ``nova_authz`` (guards drift), and every delegated hop still passes
-the Layer B gate and is re-verified by the agent itself against the run snapshot.
+capability in the dynamic RBAC registry (guards drift), and every delegated hop
+still passes the Layer B gate and is re-verified by the agent itself against the
+run snapshot.
 """
 
 from __future__ import annotations

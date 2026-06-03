@@ -15,4 +15,16 @@ export class RbacController {
   getMatrix = async (_req: Request, res: Response): Promise<void> => {
     res.json(await this.service.getMatrix());
   };
+
+  listCapabilities = async (_req: Request, res: Response): Promise<void> => {
+    res.json(await this.service.listCapabilities());
+  };
+
+  listRoutePolicies = async (_req: Request, res: Response): Promise<void> => {
+    res.json(await this.service.listRoutePolicies());
+  };
+
+  listViewPermissions = async (_req: Request, res: Response): Promise<void> => {
+    res.json(await this.service.listViewPermissions());
+  };
 }

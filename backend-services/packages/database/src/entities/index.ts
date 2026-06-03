@@ -3,6 +3,12 @@ import { Role } from './role.entity';
 import { Permission } from './permission.entity';
 import { UserRole } from './user-role.entity';
 import { RolePermission } from './role-permission.entity';
+import { Capability } from './capability.entity';
+import { CapabilityPermission } from './capability-permission.entity';
+import { RoutePolicy } from './route-policy.entity';
+import { ViewPermission } from './view-permission.entity';
+import { RbacAuditLog } from './rbac-audit-log.entity';
+import { RbacRevision } from './rbac-revision.entity';
 import { Customer } from './customer.entity';
 import { Product } from './product.entity';
 import { Sale } from './sale.entity';
@@ -22,6 +28,12 @@ export {
   Permission,
   UserRole,
   RolePermission,
+  Capability,
+  CapabilityPermission,
+  RoutePolicy,
+  ViewPermission,
+  RbacAuditLog,
+  RbacRevision,
   Customer,
   Product,
   Sale,
@@ -45,6 +57,12 @@ export const ENTITIES = [
   Permission,
   UserRole,
   RolePermission,
+  Capability,
+  CapabilityPermission,
+  RoutePolicy,
+  ViewPermission,
+  RbacAuditLog,
+  RbacRevision,
   Customer,
   Product,
   Sale,

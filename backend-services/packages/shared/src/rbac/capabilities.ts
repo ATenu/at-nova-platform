@@ -1,17 +1,24 @@
 /**
- * Capability catalog: the single, code-owned source of truth that binds every
+ * Capability catalog: the INITIAL SEED + fail-closed baseline that binds every
  * agent skill and MCP tool to the SAME domain permission(s) its equivalent REST
  * operation already enforces. This is the linchpin of per-user, per-action
  * authorization for the asynchronous orchestration plane.
  *
+ * The runtime source of truth is the database (the `capabilities` /
+ * `capability_permissions` tables), served via the RBAC registry and editable by
+ * an admin (required permissions, risk, enabled). These constants seed that
+ * database and bootstrap the API before the first DB load, so day-1 behavior is
+ * identical; they are NOT the runtime policy.
+ *
  * Authorization is AND-composed and default-deny:
  *   - A capability is invokable only if the acting user's permission set
  *     contains EVERY entry in `requiredPermissions`.
- *   - A capability with no descriptor in this catalog is unreachable.
+ *   - A capability that is disabled, has no required permissions, or is absent
+ *     from the registry is unreachable.
  *
- * The Python execution plane mirrors this catalog via the generated `nova_authz`
- * package; a CI parity check fails the build if the two ever diverge. Never
- * inline raw capability ids or required permissions in feature code.
+ * The Python execution plane consumes the SAME policy dynamically from the RBAC
+ * registry endpoint (no codegen/parity gate). Never inline raw capability ids or
+ * required permissions in feature code.
  */
 
 import type { Permission } from './permissions';
@@ -47,6 +54,13 @@ export interface CapabilityDescriptor {
    * routing/exposure flag only; authorization is still per `requiredPermissions`.
    */
   readonly delegated?: boolean;
+  /**
+   * When true the capability requires a recorded human approval to execute, on
+   * top of its required permissions. Absent => false: by default permission
+   * consent alone authorizes execution regardless of `risk`. Admin-editable in
+   * the DB; the catalog only sets it for capabilities that ship approval-gated.
+   */
+  readonly requiresApproval?: boolean;
 }
 
 /**
@@ -392,7 +406,13 @@ export function rolesGrantCapability(roles: readonly Role[], capabilityId: strin
   );
 }
 
-/** High-risk capabilities require a recorded human approval gate (section 18). */
+/**
+ * Whether a capability needs a recorded human approval gate, on TOP of its
+ * required permissions. This is an explicit, admin-editable property (default
+ * false), decoupled from `risk`: permission consent alone authorizes execution
+ * unless an admin has opted the capability into approval. `risk` is retained as
+ * informational metadata only and never gates execution by itself.
+ */
 export function capabilityRequiresApproval(capability: CapabilityDescriptor): boolean {
-  return capability.risk === 'high';
+  return capability.requiresApproval === true;
 }

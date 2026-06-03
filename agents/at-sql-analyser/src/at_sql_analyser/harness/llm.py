@@ -76,7 +76,8 @@ class WriteStep(BaseModel):
     emits the final, fully-populated writes. Each step is one of:
       - ``"read"``: dispatch ONE entitled read capability to resolve a value;
       - ``"write"``: emit the final write plan (>= 1 fully-populated item);
-      - ``"finish"``: nothing applies, or a required value cannot be resolved.
+      - ``"finish"``: only when AUTHORIZED WRITES is empty (the harness ignores
+        finish while entitled writes exist and forces progress).
     Both reads and writes are independently re-gated (Layer B) before dispatch.
     """
 

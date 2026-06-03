@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
-import { ForbiddenError, UnauthenticatedError, permissionsForRoles } from '@nova/shared';
+import { ForbiddenError, UnauthenticatedError } from '@nova/shared';
 import { authorize } from './authorize';
+import { getActiveRegistry } from '../rbac/registry-holder';
 import type { RouteAccessPolicy } from './route-policy';
 import type { AuthContext } from './auth-context';
 
@@ -25,7 +26,7 @@ function authForRoles(roles: AuthContext['roles']): AuthContext {
     givenName: 'Test',
     familyName: 'User',
     roles,
-    permissions: permissionsForRoles(roles),
+    permissions: getActiveRegistry().permissionsForRoles(roles),
     scopes: [],
   };
 }

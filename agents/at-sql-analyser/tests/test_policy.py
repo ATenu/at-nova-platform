@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from at_sql_analyser.auth.policy import authorize, is_entitled
+from at_sql_analyser.authz.rbac_registry import (
+    CapabilityDescriptor,
+    RbacRegistry,
+    set_active_registry,
+)
 
 from .fakes import make_snapshot
 
@@ -36,8 +41,41 @@ def test_denies_concrete_read_when_roles_lack_permission() -> None:
     assert decision.reason == "missing_permission"
 
 
-def test_high_risk_write_requires_approval() -> None:
+def test_write_allowed_without_approval_by_default() -> None:
+    # Permission consent alone authorizes the write: approval is opt-in (default
+    # false) and decoupled from risk, so an entitled user is not blocked.
     snap = make_snapshot(roles=("admin",), allowlist=("data.act.write",))
+    decision = authorize(snap, "data.act.write")
+    assert decision.allowed
+    assert decision.reason == "allowed"
+
+
+def test_approval_required_only_when_capability_opts_in() -> None:
+    # When an admin flags a capability ``requires_approval``, the gate denies
+    # until a recorded approval is supplied — independent of risk level.
+    gated = CapabilityDescriptor(
+        id="data.act.write",
+        kind="agent-skill",
+        mode="write",
+        required_permissions=("create-agent-run",),
+        risk="low",
+        resource_scoped=True,
+        delegated=False,
+        enabled=True,
+        requires_approval=True,
+    )
+    set_active_registry(
+        RbacRegistry(
+            revision=1,
+            capabilities=(gated,),
+            role_permissions={"admin": ("create-agent-run",)},
+        )
+    )
+    snap = make_snapshot(
+        roles=("admin",),
+        allowlist=("data.act.write",),
+        permissions=frozenset({"create-agent-run"}),
+    )
     without = authorize(snap, "data.act.write")
     assert not without.allowed
     assert without.reason == "approval_required"

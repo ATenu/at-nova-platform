@@ -1,15 +1,16 @@
-import { Permission as PermissionEntity, Role as RoleEntity } from '@nova/database';
-import { PERMISSIONS, ROLE_PERMISSIONS, ROLES } from '@nova/shared';
-import type { DataSource, Repository } from 'typeorm';
+import { getActiveRegistry } from '../../rbac/registry-holder';
+import type { CapabilityView, RoutePolicyView, ViewPermissionView } from '../../rbac/rbac-registry';
 
 export interface RoleDto {
   readonly name: string;
   readonly description: string | null;
+  readonly isSystem: boolean;
 }
 
 export interface PermissionDto {
   readonly name: string;
   readonly description: string | null;
+  readonly isSystem: boolean;
 }
 
 export interface RolePermissionMatrixDto {
@@ -20,51 +21,57 @@ export interface RolePermissionMatrixDto {
 }
 
 /**
- * Read-only RBAC view. The authoritative role -> permission grants live in
- * `@nova/shared` (`ROLE_PERMISSIONS`) and are what the authorization pipeline
- * enforces; this service simply reflects them (enriched with the descriptions
- * stored in the database). Runtime grant edits are intentionally not exposed:
- * changing a database row could never alter the enforced policy and would only
- * create a misleading divergence.
+ * Read-only RBAC view. Reflects the authoritative, admin-editable policy held in
+ * the DB-driven registry (the same snapshot the authorization layer enforces), so
+ * the admin UI can never display a matrix that diverges from what is enforced.
  */
 export class RbacService {
-  private readonly roles: Repository<RoleEntity>;
-  private readonly permissions: Repository<PermissionEntity>;
-
-  constructor(dataSource: DataSource) {
-    this.roles = dataSource.getRepository(RoleEntity);
-    this.permissions = dataSource.getRepository(PermissionEntity);
+  listRoles(): Promise<readonly RoleDto[]> {
+    return Promise.resolve(
+      getActiveRegistry().snapshot.roles.map((role) => ({
+        name: role.name,
+        description: role.description,
+        isSystem: role.isSystem,
+      })),
+    );
   }
 
-  async listRoles(): Promise<readonly RoleDto[]> {
-    const descriptions = await this.roleDescriptions();
-    return ROLES.map((name) => ({ name, description: descriptions.get(name) ?? null }));
+  listPermissions(): Promise<readonly PermissionDto[]> {
+    return Promise.resolve(
+      getActiveRegistry().snapshot.permissions.map((permission) => ({
+        name: permission.name,
+        description: permission.description,
+        isSystem: permission.isSystem,
+      })),
+    );
   }
 
-  async listPermissions(): Promise<readonly PermissionDto[]> {
-    const descriptions = await this.permissionDescriptions();
-    return PERMISSIONS.map((name) => ({ name, description: descriptions.get(name) ?? null }));
+  listCapabilities(): Promise<readonly CapabilityView[]> {
+    return Promise.resolve(getActiveRegistry().snapshot.capabilities);
+  }
+
+  listRoutePolicies(): Promise<readonly RoutePolicyView[]> {
+    return Promise.resolve(getActiveRegistry().snapshot.routePolicies);
+  }
+
+  listViewPermissions(): Promise<readonly ViewPermissionView[]> {
+    return Promise.resolve(getActiveRegistry().snapshot.viewPermissions);
   }
 
   async getMatrix(): Promise<RolePermissionMatrixDto> {
-    const [roles, permissions] = await Promise.all([this.listRoles(), this.listPermissions()]);
+    const snapshot = getActiveRegistry().snapshot;
     const grants: Record<string, readonly string[]> = {};
     let totalGrants = 0;
-    for (const role of ROLES) {
-      const granted = ROLE_PERMISSIONS[role];
-      grants[role] = [...granted];
+    for (const role of snapshot.roles) {
+      const granted = snapshot.rolePermissions[role.name] ?? [];
+      grants[role.name] = [...granted];
       totalGrants += granted.length;
     }
-    return { roles, permissions, grants, totalGrants };
-  }
-
-  private async roleDescriptions(): Promise<Map<string, string | null>> {
-    const rows = await this.roles.find();
-    return new Map(rows.map((row) => [row.name, row.description]));
-  }
-
-  private async permissionDescriptions(): Promise<Map<string, string | null>> {
-    const rows = await this.permissions.find();
-    return new Map(rows.map((row) => [row.name, row.description]));
+    return {
+      roles: await this.listRoles(),
+      permissions: await this.listPermissions(),
+      grants,
+      totalGrants,
+    };
   }
 }

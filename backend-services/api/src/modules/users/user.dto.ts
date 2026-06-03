@@ -1,5 +1,5 @@
 import type { User } from '@nova/database';
-import { permissionsForRoles, toKnownRoles } from '@nova/shared';
+import { getActiveRegistry } from '../../rbac/registry-holder';
 
 /** Minimal user reference embedded in other resources (owners, authors). */
 export interface UserSummaryDto {
@@ -51,7 +51,8 @@ export function toUserSummaryDto(user: User): UserSummaryDto {
 }
 
 function effectivePermissions(roles: readonly string[]): string[] {
-  return [...permissionsForRoles(toKnownRoles([...roles]))];
+  const registry = getActiveRegistry();
+  return [...registry.permissionsForRoles(registry.knownRoles([...roles]))].sort();
 }
 
 export function toCurrentUserDto(user: User, roles: readonly string[]): CurrentUserDto {

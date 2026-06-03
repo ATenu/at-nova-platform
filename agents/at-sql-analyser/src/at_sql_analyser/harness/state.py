@@ -118,6 +118,8 @@ class GraphState(TypedDict, total=False):
     pending_read: CapabilityCall | None
     write_calls: list[CapabilityCall]
     write_outcomes: list[WriteOutcome]
+    # True when RBAC entitled at least one concrete write capability this run.
+    entitled_writes: bool
     answer: str | None
     reason: str | None
     status: Literal["completed", "failed", "denied", "needs_approval"]

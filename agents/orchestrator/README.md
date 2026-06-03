@@ -221,25 +221,23 @@ is exposed based on entitlement, stripping secrets.
 
 ## 6. Authorization model
 
-Authorization is **the platform's, reused — never re-implemented**. The TypeScript
-RBAC registry in `@nova/shared` is the single source of truth; it is generated into
-Python and parity-checked in CI.
+Authorization is **the platform's, reused — never re-implemented**. The single
+source of truth is the platform database, served dynamically via the authenticated
+**RBAC registry endpoint** (`GET /internal/rbac/registry`). The worker fetches the
+registry at task start and publishes it as the process-wide active policy; if the
+fetch fails it **fails closed** (the active registry is cleared and every
+capability lookup denies). Layer B authorizes from the snapshot's effective
+**permissions** against each capability's required permissions — no hardcoded
+role→permission map, no codegen, no CI parity gate.
 
 ### Modules (`authz/`)
 
 | File | Role |
 |---|---|
-| `nova_authz.py` | **Generated** `PERMISSIONS`, `ROLES`, `ROLE_PERMISSIONS`, `CAPABILITY_CATALOG` — do not edit by hand |
-| `registry.py` | Lookup helpers mirroring the TypeScript registry (`permissions_for_roles`, `roles_grant_permission`, `get_capability`, …) |
-| `policy_gate.py` | **Layer B** authoritative gate: `evaluate_capability()` + reason codes |
+| `rbac_registry.py` | `RbacRegistryClient` (fetch/cache by revision, ETag, fail closed) + process-wide active-registry holder |
+| `registry.py` | Lookup helpers over the active registry (`permissions_for_roles`, `roles_grant_permission`, `get_capability`, …); deny when no registry is loaded |
+| `policy_gate.py` | **Layer B** authoritative gate: `evaluate_capability(capability_id, permissions, …)` + reason codes |
 | `snapshot.py` | `EntitlementSnapshot`, `compute_snapshot_hash`, `verify_snapshot` (byte-identical to the TS hash) |
-
-Regenerate after any RBAC change:
-
-```bash
-python scripts/generate_nova_authz.py
-git diff --exit-code src/nova_orchestrator/authz/nova_authz.py
-```
 
 ### Snapshot verification (fail closed)
 
@@ -362,7 +360,7 @@ Agent *selection* is a registry lookup, not an LLM decision:
 
 - `load_registry_from_store()` reads `a2a_agent_registrations` where
   `last_seen_at >= now - A2A_REGISTRY_TTL_SECONDS`; advertised skills are validated
-  against `nova_authz` (`kind == "agent-skill"`).
+  against the active RBAC registry (`kind == "agent-skill"`).
 - When the registry is empty, a static SQL-analyst seed is used
   (`A2A_REGISTRY_SEED_SQL_ANALYST`, `SQL_ANALYST_AGENT_URL`, `SQL_ANALYST_AGENT_AUDIENCE`).
 - `AgentRegistry.agent_for_skill(capability_id)` maps an umbrella skill to a concrete
@@ -386,9 +384,8 @@ the unit level (no full end-to-end run):
 | `test_graph.py` | Menu building, dedupe keys, dispatch routing, approval/auto-approve, history |
 | `test_agents.py` | `AgentRegistry`, store loading, SSRF guards, card parsing, seed fallback |
 | `test_agent_client.py` | A2A result parsing, event coercion, 401 token invalidation |
-| `test_policy_gate.py` | Layer B allow/deny/unknown/missing-permission |
+| `test_policy_gate.py` | Layer B allow/deny/unknown/missing-permission, fail-closed when no registry loaded |
 | `test_snapshot_parity.py` | Cross-language hash parity, tamper/expiry |
-| `test_registry_parity.py` | Generated registry invariants |
 | `test_events.py` | `safe_io`, visibility classifier, webhook enqueue scoping |
 | `test_webhooks.py` | HMAC signing, batch body, backoff, dead-letter |
 | `test_gateway.py` | Registration auth, SSRF, upsert/deregister |
@@ -424,9 +421,8 @@ the unit level (no full end-to-end run):
 | `src/nova_orchestrator/webhooks.py` | Outbox dispatcher (coalescing, HMAC, backoff) |
 | `src/nova_orchestrator/webhook_tasks.py` | Celery `webhook.dispatch` task |
 | `src/nova_orchestrator/tokens.py` | `ServiceTokenClient` (client-credentials + cache) |
-| `src/nova_orchestrator/authz/*.py` | Generated RBAC + Layer B gate + snapshot integrity |
+| `src/nova_orchestrator/authz/*.py` | Dynamic RBAC registry client + Layer B gate + snapshot integrity |
 | `src/nova_orchestrator/observability/langfuse_tracing.py` | Langfuse v3 wiring + masking |
-| `scripts/generate_nova_authz.py` | Regenerates `nova_authz.py` from `@nova/shared` |
 | `Dockerfile` | Single image for gateway + workers |
 | `tests/*.py` | Unit tests (see §11) |
 

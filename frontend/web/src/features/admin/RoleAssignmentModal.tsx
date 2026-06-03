@@ -3,7 +3,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { setUserRoles } from '@/api/admin.api';
 import { queryKeys } from '@/api/queryClient';
 import type { AdminUserDto } from '@/api/types';
-import { NOVA_ROLES, roleLabel } from '@/auth/permissions';
+import { roleLabel } from '@/auth/permissions';
+import { useRbacRegistry } from '@/auth/RbacRegistryProvider';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { useToast } from '@/components/ui/toast';
@@ -18,6 +19,7 @@ export function RoleAssignmentModal({
 }) {
   const toast = useToast();
   const queryClient = useQueryClient();
+  const { roles: availableRoles } = useRbacRegistry();
   const [roles, setRoles] = useState<readonly string[]>(() => user?.roles ?? []);
   const [trackedUserId, setTrackedUserId] = useState<string | null>(user?.id ?? null);
 
@@ -60,10 +62,14 @@ export function RoleAssignmentModal({
       }
     >
       <div className="stack" style={{ gap: 8 }}>
-        {NOVA_ROLES.map((role) => (
-          <label key={role} className="checkbox">
-            <input type="checkbox" checked={roles.includes(role)} onChange={() => toggle(role)} />
-            {roleLabel(role)}
+        {availableRoles.map((role) => (
+          <label key={role.name} className="checkbox">
+            <input
+              type="checkbox"
+              checked={roles.includes(role.name)}
+              onChange={() => toggle(role.name)}
+            />
+            {roleLabel(role.name)}
           </label>
         ))}
         {roles.length === 0 ? <span className="field-error">Assign at least one role.</span> : null}

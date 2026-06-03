@@ -1,11 +1,14 @@
 /**
- * Centralized, typed RBAC definitions.
+ * Typed RBAC catalog used as the INITIAL SEED and as the fail-closed bootstrap
+ * baseline.
  *
- * This module is the single source of truth for the platform's roles,
- * permissions, and the mapping between them. Both the runtime authorization
- * pipeline (API) and the database seed consume these definitions, so the data
- * stored in PostgreSQL can never drift from the access decisions enforced at
- * runtime. Never inline raw role/permission strings in feature code.
+ * The runtime source of truth for authorization policy (roles, permissions,
+ * role->permission grants, capability bindings) is the database, served via the
+ * RBAC registry and editable by an admin. These constants seed that database so
+ * day-1 behavior is identical, and provide a safe default the API can bootstrap
+ * from before the first DB load. They are NOT the runtime policy: a DB/admin
+ * change does alter enforced access. Never inline raw role/permission strings in
+ * feature code; reference these names.
  */
 
 export const PERMISSIONS = [

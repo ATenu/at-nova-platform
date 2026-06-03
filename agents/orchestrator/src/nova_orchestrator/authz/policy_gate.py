@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from .registry import get_capability, roles_grant_permission
+from .registry import get_capability
 
 # Decision reasons (stable, machine-readable; surfaced in the audit log).
 REASON_ALLOWED = "allowed"
@@ -33,29 +33,36 @@ class PolicyDecision:
 
 def evaluate_capability(
     capability_id: str,
-    roles: Iterable[str],
+    permissions: Iterable[str],
     *,
     has_approval: bool = False,
 ) -> PolicyDecision:
-    """Authoritative capability decision against the snapshot's realm roles.
+    """Authoritative capability decision against the snapshot's effective permissions.
 
-    Default deny:
-      - unknown capability -> deny
-      - any required permission not granted by the roles -> deny
-      - high-risk capability without a recorded approval -> deny
+    The integrity-hashed entitlement snapshot already carries the owner's
+    effective permission set, so Layer B authorizes directly against permissions
+    (the registry binds each capability to its required permissions). Default deny:
+      - unknown / disabled / permission-less capability -> deny
+      - any required permission absent from the snapshot -> deny
+      - capability admin-flagged ``requires_approval`` without a recorded approval -> deny
+
+    Approval is an explicit, admin-editable capability property (default false),
+    DECOUPLED from ``risk``: by default a capability whose required permissions
+    are granted is allowed regardless of risk level. ``risk`` is informational
+    metadata and never gates execution by itself.
     """
-    roles_list = list(roles)
+    granted = set(permissions)
     capability = get_capability(capability_id)
-    if capability is None or not capability.required_permissions:
+    if capability is None or not capability.enabled or not capability.required_permissions:
         return PolicyDecision(False, capability_id, REASON_UNKNOWN_CAPABILITY)
 
     for permission in capability.required_permissions:
-        if not roles_grant_permission(roles_list, permission):
+        if permission not in granted:
             return PolicyDecision(
                 False, capability_id, REASON_MISSING_PERMISSION, missing_permission=permission
             )
 
-    if capability.risk == "high" and not has_approval:
+    if capability.requires_approval and not has_approval:
         return PolicyDecision(False, capability_id, REASON_APPROVAL_REQUIRED)
 
     return PolicyDecision(True, capability_id, REASON_ALLOWED)

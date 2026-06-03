@@ -5,6 +5,9 @@ import { AppDataSource, createAgentsDataSource } from '@nova/database';
 import { createLogger, createRedisConnection, type RedisConnection } from '@nova/shared';
 import { createApp } from './app';
 import { loadApiConfig } from './config';
+import { RbacRegistryService } from './rbac/rbac-registry.service';
+import { reconcileRoutePolicies } from './rbac/route-policy-reconciler';
+import { getRegisteredPolicies } from './auth/route-policy';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -37,7 +40,22 @@ async function bootstrap(): Promise<void> {
       })
     : null;
 
-  const app = createApp({ config, logger, dataSource, cacheRedis, agentsDataSource });
+  // DB-driven RBAC: reconcile code-declared route policies into the database,
+  // then load the authoritative policy snapshot into memory before serving so
+  // enforcement is never fail-open.
+  const rbacRegistryService = new RbacRegistryService(dataSource, logger);
+  await reconcileRoutePolicies(dataSource, getRegisteredPolicies());
+  await rbacRegistryService.start();
+  logger.info({ revision: rbacRegistryService.getCurrent().revision }, 'rbac registry loaded');
+
+  const app = createApp({
+    config,
+    logger,
+    dataSource,
+    cacheRedis,
+    agentsDataSource,
+    rbacRegistryService,
+  });
   const server: Server = app.listen(config.port, () => {
     logger.info({ port: config.port }, 'nova-api listening');
   });
@@ -61,6 +79,7 @@ async function bootstrap(): Promise<void> {
     server.close(() => {
       void (async () => {
         try {
+          rbacRegistryService.stop();
           if (cacheRedis) {
             await cacheRedis.quit();
           }

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
-  EXPECTED_ROLE_PERMISSION_COUNT,
+  hasAllPermissions,
   hasAnyPermission,
   hasPermission,
   hasRole,
+  permissionLabel,
+  roleLabel,
   type CurrentUser,
 } from './permissions';
 
@@ -28,16 +30,23 @@ describe('authorization helpers', () => {
     expect(hasAnyPermission(supportOps, ['write-sop', 'read-users'])).toBe(false);
   });
 
+  it('checks all-of permissions', () => {
+    expect(hasAllPermissions(supportOps, ['read-issues', 'write-issues'])).toBe(true);
+    expect(hasAllPermissions(supportOps, ['read-issues', 'create-issues'])).toBe(false);
+  });
+
   it('checks roles', () => {
     expect(hasRole(supportOps, 'support-operations-user')).toBe(true);
     expect(hasRole(supportOps, 'admin')).toBe(false);
   });
 
-  it('matches the documented clean-seed grant count', () => {
-    expect(EXPECTED_ROLE_PERMISSION_COUNT).toBe(39);
+  it('treats permissions as open strings validated at runtime', () => {
+    const user: CurrentUser = { ...supportOps, permissions: ['custom-dynamic-permission'] };
+    expect(hasPermission(user, 'custom-dynamic-permission')).toBe(true);
   });
 
-  it('does not grant create-issues to support operations (cannot create issues)', () => {
-    expect(supportOps.permissions).not.toContain('create-issues');
+  it('humanizes role and permission names for display', () => {
+    expect(permissionLabel('read-customers')).toBe('Read customers');
+    expect(roleLabel('ops-compliance')).toBe('Ops Compliance');
   });
 });

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { MessageRole, type AgentRun } from '@nova/database';
 import { NotFoundError, ValidationError, type Logger } from '@nova/shared';
 import type { AuthContext } from '../../auth/auth-context';
+import { getActiveRegistry } from '../../rbac/registry-holder';
 import { resolveCurrentUser } from '../users/current-user';
 import type { UserRepository } from '../users/user.repository';
 import type { ConversationRepository } from '../chat/conversation.repository';
@@ -83,6 +84,8 @@ export class AgentRunService {
       ownerUserId: user.id,
       roles: input.auth.roles,
       permissions: input.auth.permissions,
+      resolveCapabilityAllowlist: (permissions) =>
+        getActiveRegistry().capabilityAllowlist(permissions),
       ttlSeconds: this.config.runTtlSeconds,
     });
 

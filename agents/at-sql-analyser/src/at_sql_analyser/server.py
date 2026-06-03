@@ -50,6 +50,7 @@ from .auth.resource_server import AuthError, ResourceServer, VerifiedCaller
 from .auth.snapshot import SnapshotClient, SnapshotError, VerifiedSnapshot
 from .auth.tokens import ServiceTokenClient
 from .authz.policy_gate import REASON_APPROVAL_REQUIRED
+from .authz.rbac_registry import RbacRegistryClient, RbacRegistryError, reset_active_registry
 from .config import AgentConfig, load_config
 from .content_policy import resolve_text
 from .harness.graph import GraphDeps, run_task
@@ -77,6 +78,12 @@ class SnapshotPort(Protocol):
     """Entitlement snapshot fetch + integrity verification by run id."""
 
     def fetch_verified(self, run_id: str) -> VerifiedSnapshot: ...
+
+
+class RegistryPort(Protocol):
+    """Dynamic RBAC registry refresh seam (publishes the active policy)."""
+
+    def refresh(self) -> object: ...
 
 
 DataClientFactory = Callable[[str], DataClient]
@@ -296,6 +303,7 @@ class SqlAnalystExecutor(AgentExecutor):
         *,
         reasoner: Reasoner,
         snapshot_client: SnapshotPort,
+        registry_client: RegistryPort,
         data_client_factory: DataClientFactory,
         capability_client: CapabilityClient,
         limits: GuardLimits,
@@ -303,6 +311,7 @@ class SqlAnalystExecutor(AgentExecutor):
     ) -> None:
         self._reasoner = reasoner
         self._snapshot = snapshot_client
+        self._registry = registry_client
         self._make_data_client = data_client_factory
         self._capabilities = capability_client
         self._limits = limits
@@ -361,6 +370,17 @@ class SqlAnalystExecutor(AgentExecutor):
                     )
                 except SnapshotError:
                     await finish("denied", None, "entitlement_unavailable")
+                    return
+
+                # Refresh the dynamic, DB-driven policy as the active registry the
+                # Layer B gate reads. Fail closed: on any outage we clear the
+                # active policy and deny, so no skill/capability is authorized
+                # against absent policy (the worker + control plane also re-check).
+                try:
+                    await asyncio.to_thread(self._registry.refresh)
+                except RbacRegistryError:
+                    reset_active_registry()
+                    await finish("denied", None, "registry_unavailable")
                     return
 
                 store = (
@@ -601,6 +621,7 @@ def create_app(
     *,
     reasoner: Reasoner | None = None,
     snapshot_client: SnapshotPort | None = None,
+    registry_client: RegistryPort | None = None,
     resource_server: ResourceServerPort | None = None,
     data_client_factory: DataClientFactory | None = None,
     capability_client: CapabilityClient | None = None,
@@ -623,6 +644,11 @@ def create_app(
     )
     sc: SnapshotPort = snapshot_client or SnapshotClient(
         tokens, base_url=cfg.nova_api_internal_url, audience_scope=cfg.mcp_audience_scope
+    )
+    rc: RegistryPort = registry_client or RbacRegistryClient(
+        base_url=cfg.nova_api_internal_url,
+        tokens=tokens,
+        audience_scope=cfg.mcp_audience_scope,
     )
     make_data_client: DataClientFactory = data_client_factory or (
         lambda run_id: McpDataClient(
@@ -666,6 +692,7 @@ def create_app(
     executor = SqlAnalystExecutor(
         reasoner=the_reasoner,
         snapshot_client=sc,
+        registry_client=rc,
         data_client_factory=make_data_client,
         capability_client=cap_client,
         limits=limits,

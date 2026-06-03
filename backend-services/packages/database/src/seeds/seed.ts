@@ -1,9 +1,17 @@
 import 'reflect-metadata';
 import type { DataSource, EntityManager } from 'typeorm';
-import { PERMISSIONS, ROLE_PERMISSIONS } from '@nova/shared';
+import {
+  CAPABILITY_CATALOG,
+  MCP_READ_VIEW_PERMISSIONS,
+  MCP_WRITE_VIEW_PERMISSIONS,
+  PERMISSIONS,
+  ROLE_PERMISSIONS,
+} from '@nova/shared';
 import { AppDataSource } from '../data-source';
 import {
   ActionComment,
+  Capability,
+  CapabilityPermission,
   Conversation,
   Customer,
   CustomerIssue,
@@ -20,6 +28,7 @@ import {
   SopDetail,
   User,
   UserRole,
+  ViewPermission,
 } from '../entities';
 import {
   actionCommentsSeed,
@@ -48,6 +57,9 @@ const RESET_ORDER: readonly string[] = [
   'sales',
   'sop_details',
   'sops',
+  'capability_permissions',
+  'capabilities',
+  'view_permissions',
   'role_permissions',
   'user_roles',
   'permissions',
@@ -63,6 +75,9 @@ const SUMMARY_TABLES: readonly string[] = [
   'permissions',
   'user_roles',
   'role_permissions',
+  'capabilities',
+  'capability_permissions',
+  'view_permissions',
   'customers',
   'products',
   'sops',
@@ -133,15 +148,17 @@ async function seedUsers(manager: EntityManager): Promise<Map<string, string>> {
 }
 
 async function seedRolesAndPermissions(manager: EntityManager): Promise<void> {
+  // Built-in roles/permissions are flagged `is_system` so the admin API protects
+  // them from deletion while still allowing their grants to be edited.
   await manager.upsert(
     Role,
-    rolesSeed.map((role) => ({ name: role.name, description: role.description })),
+    rolesSeed.map((role) => ({ name: role.name, description: role.description, isSystem: true })),
     { conflictPaths: ['name'], skipUpdateIfNoValuesChanged: true },
   );
 
   await manager.upsert(
     Permission,
-    PERMISSIONS.map((name) => ({ name })),
+    PERMISSIONS.map((name) => ({ name, isSystem: true })),
     { conflictPaths: ['name'], skipUpdateIfNoValuesChanged: true },
   );
 
@@ -156,6 +173,61 @@ async function seedRolesAndPermissions(manager: EntityManager): Promise<void> {
     .values(rolePermissionRows)
     .orIgnore()
     .execute();
+}
+
+async function seedCapabilities(manager: EntityManager): Promise<void> {
+  await manager.upsert(
+    Capability,
+    CAPABILITY_CATALOG.map((capability) => ({
+      id: capability.id,
+      kind: capability.kind,
+      mode: capability.mode,
+      risk: capability.risk,
+      resourceScoped: capability.resourceScoped,
+      delegated: capability.delegated ?? false,
+      enabled: true,
+      requiresApproval: capability.requiresApproval ?? false,
+      isSystem: true,
+    })),
+    { conflictPaths: ['id'], skipUpdateIfNoValuesChanged: true },
+  );
+
+  const rows = CAPABILITY_CATALOG.flatMap((capability) =>
+    capability.requiredPermissions.map((permissionName) => ({
+      capabilityId: capability.id,
+      permissionName,
+    })),
+  );
+
+  if (rows.length > 0) {
+    await manager
+      .createQueryBuilder()
+      .insert()
+      .into(CapabilityPermission)
+      .values(rows)
+      .orIgnore()
+      .execute();
+  }
+}
+
+async function seedViewPermissions(manager: EntityManager): Promise<void> {
+  const readRows = Object.entries(MCP_READ_VIEW_PERMISSIONS).map(([viewName, permissionName]) => ({
+    viewName,
+    mode: 'read',
+    permissionName,
+    isSystem: true,
+  }));
+  const writeRows = Object.entries(MCP_WRITE_VIEW_PERMISSIONS).map(([viewName, permissionName]) => ({
+    viewName,
+    mode: 'write',
+    permissionName,
+    isSystem: true,
+  }));
+
+  await manager.upsert(ViewPermission, [...readRows, ...writeRows], {
+    conflictPaths: ['viewName', 'mode'],
+    skipUpdateIfNoValuesChanged: true,
+  });
 }
 
 async function seedUserRoles(
@@ -431,6 +503,8 @@ export async function seedDatabase(
 
     const userIdByEmail = await seedUsers(manager);
     await seedRolesAndPermissions(manager);
+    await seedCapabilities(manager);
+    await seedViewPermissions(manager);
     await seedUserRoles(manager, userIdByEmail);
     await seedCustomers(manager);
     const productByName = await seedProducts(manager);

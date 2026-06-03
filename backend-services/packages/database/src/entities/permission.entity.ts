@@ -10,6 +10,10 @@ export class Permission extends TimestampedEntity {
   @Column({ name: 'description', type: 'text', nullable: true })
   description!: string | null;
 
+  /** Built-in permission seeded by the platform; protected from deletion via the API. */
+  @Column({ name: 'is_system', type: 'boolean', default: false })
+  isSystem!: boolean;
+
   @OneToMany(() => RolePermission, (rolePermission) => rolePermission.permission)
   rolePermissions!: RolePermission[];
 }

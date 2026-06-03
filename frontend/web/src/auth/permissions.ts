@@ -1,110 +1,18 @@
 /**
- * Frontend mirror of the backend RBAC source of truth
- * (`@nova/shared` PERMISSIONS / ROLES / ROLE_PERMISSIONS).
+ * Frontend authorization helpers. These drive UI affordances (route visibility,
+ * button enablement) ONLY — they are never a security boundary. The backend
+ * validates every request and remains the single source of truth.
  *
- * These constants exist only to drive UI affordances (route visibility, button
- * enablement). They are NOT an authorization boundary: the backend validates
- * every request and remains the single source of truth. Effective permissions
- * for the current user always come from the backend `/auth/me` response, not
- * from this static map.
+ * Roles and permissions are open strings because the catalog is fully
+ * admin-authorable at runtime and served dynamically (see `RbacRegistryProvider`
+ * and `/auth/me`). There is intentionally no hardcoded role/permission mirror.
  */
 
-export const NOVA_ROLES = [
-  'sales-user',
-  'support-operations-user',
-  'admin',
-  'customer-support',
-  'ops-compliance',
-] as const;
+/** A permission name. Validated at runtime against the fetched registry. */
+export type NovaPermission = string;
 
-export type NovaRole = (typeof NOVA_ROLES)[number];
-
-export const NOVA_PERMISSIONS = [
-  'read-customers',
-  'write-customers',
-  'create-issues',
-  'read-issues',
-  'write-issues',
-  'read-sales',
-  'write-sales',
-  'read-permissions',
-  'write-permissions',
-  'read-actions',
-  'write-actions',
-  'read-sop',
-  'write-sop',
-  'read-users',
-  'write-users',
-] as const;
-
-export type NovaPermission = (typeof NOVA_PERMISSIONS)[number];
-
-/** Canonical role -> permission grants (kept in sync with the backend seed). */
-export const ROLE_PERMISSIONS: Readonly<Record<NovaRole, readonly NovaPermission[]>> = {
-  'sales-user': [
-    'read-customers',
-    'write-customers',
-    'read-issues',
-    'read-sales',
-    'write-sales',
-    'read-actions',
-    'read-sop',
-  ],
-  'support-operations-user': [
-    'read-customers',
-    'write-customers',
-    'read-issues',
-    'write-issues',
-    'read-sales',
-    'read-actions',
-    'write-actions',
-    'read-sop',
-  ],
-  admin: [
-    'read-customers',
-    'write-customers',
-    'create-issues',
-    'read-issues',
-    'write-issues',
-    'read-sales',
-    'write-sales',
-    'read-permissions',
-    'write-permissions',
-    'read-actions',
-    'write-actions',
-    'read-sop',
-    'write-sop',
-    'read-users',
-    'write-users',
-  ],
-  'ops-compliance': ['read-sop', 'write-sop'],
-  'customer-support': [
-    'read-customers',
-    'create-issues',
-    'read-issues',
-    'write-issues',
-    'read-sales',
-    'read-actions',
-    'write-actions',
-  ],
-};
-
-/** Total role_permission grants after a clean seed; used for admin verification UI. */
-export const EXPECTED_ROLE_PERMISSION_COUNT = Object.values(ROLE_PERMISSIONS).reduce(
-  (sum, permissions) => sum + permissions.length,
-  0,
-);
-
-const ROLE_SET: ReadonlySet<string> = new Set(NOVA_ROLES);
-const PERMISSION_SET: ReadonlySet<string> = new Set(NOVA_PERMISSIONS);
-
-export function isNovaRole(value: string): value is NovaRole {
-  return ROLE_SET.has(value);
-}
-
-export function isNovaPermission(value: string): value is NovaPermission {
-  return PERMISSION_SET.has(value);
-}
+/** A role name. Validated at runtime against the fetched registry. */
+export type NovaRole = string;
 
 export interface CurrentUser {
   readonly id: string;

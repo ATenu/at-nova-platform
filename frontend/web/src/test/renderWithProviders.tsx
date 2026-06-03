@@ -3,6 +3,7 @@ import { render, type RenderResult } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { AuthProvider } from '@/auth/AuthProvider';
+import { RbacRegistryProvider } from '@/auth/RbacRegistryProvider';
 import { ToastProvider } from '@/components/ui/toast';
 
 /** Sign in as a seeded user for the duration of a test (mock session). */
@@ -23,7 +24,9 @@ export function renderWithProviders(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={[route]}>
           <ToastProvider>
-            <AuthProvider>{children}</AuthProvider>
+            <AuthProvider>
+              <RbacRegistryProvider>{children}</RbacRegistryProvider>
+            </AuthProvider>
           </ToastProvider>
         </MemoryRouter>
       </QueryClientProvider>

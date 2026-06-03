@@ -332,12 +332,11 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
 
     # -- write path ---------------------------------------------------------
     async def plan_write(state: GraphState) -> dict[str, Any]:
-        # Bounded resolve→act loop. A write input the capability needs (e.g. an
-        # action id) is often only named by a human handle (a title) in the
-        # request; the planner may dispatch entitled READ capabilities to resolve
-        # it from the DB before emitting the final writes. The same guards that
-        # bound the read loop bound resolution here; on exhaustion we stop
-        # without writing rather than dispatch an under-specified call.
+        # Bounded resolve→act loop. RBAC (Layer A/B) is the ONLY gate on whether
+        # a write may run; the planner must not refuse on "safety" grounds. When
+        # the model returns finish or an invalid step while entitled writes exist,
+        # the harness forces progress (bootstrap reads, replan) until dispatch or
+        # a guard budget stops the run (then fail closed — no silent no-op).
         iteration = int(state.get("iteration", 0))
         guard = evaluate_guards(
             iterations=iteration,
@@ -345,27 +344,25 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
             elapsed_s=deps.clock() - float(state.get("started_monotonic", 0.0)),
             limits=deps.limits,
         )
-        if guard.stop:
-            return {"route": "compose_writes", "reason": guard.reason,
-                    "write_calls": [], "pending_read": None}
         authorized_reads = _authorized_read_ids(deps.authorize)
         authorized_writes = _authorized_write_ids(deps.authorize)
+        base: dict[str, Any] = {"entitled_writes": bool(authorized_writes)}
+
+        if guard.stop:
+            return {
+                **base,
+                "route": "compose_writes",
+                "write_calls": [],
+                "pending_read": None,
+                "reason": guard.reason,
+            }
+
         step = await deps.reasoner.plan_write_step(
             goal=state["goal"],
             authorized_reads=authorized_reads,
             authorized_writes=authorized_writes,
             history=tuple(state.get("attempts", [])),
         )
-        if step.action == "read" and step.read_capability_id in authorized_reads:
-            # Layer A: only an entitled read id may resolve a value; it is
-            # re-gated again (Layer B) in resolve_read before any dispatch.
-            call = CapabilityCall(
-                capability_id=step.read_capability_id,
-                tool_input=dict(step.read_input),
-                rationale=step.rationale,
-            )
-            return {"route": "resolve_read", "pending_read": call,
-                    "iteration": iteration + 1}
         if step.action == "write" and step.writes:
             calls = [
                 CapabilityCall(
@@ -375,9 +372,52 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
                 )
                 for item in step.writes
             ][: deps.limits.max_queries]
-            return {"route": "dispatch_writes", "write_calls": calls,
-                    "pending_read": None}
-        return {"route": "compose_writes", "write_calls": [], "pending_read": None}
+            return {
+                **base,
+                "route": "dispatch_writes",
+                "write_calls": calls,
+                "pending_read": None,
+            }
+        if step.action == "read" and step.read_capability_id in authorized_reads:
+            call = CapabilityCall(
+                capability_id=step.read_capability_id,
+                tool_input=dict(step.read_input),
+                rationale=step.rationale,
+            )
+            return {
+                **base,
+                "route": "resolve_read",
+                "pending_read": call,
+                "iteration": iteration + 1,
+            }
+
+        if not authorized_writes:
+            return {
+                **base,
+                "route": "compose_writes",
+                "write_calls": [],
+                "pending_read": None,
+                "reason": "no_entitled_writes",
+            }
+
+        # Planner did not advance — RBAC already allows writes; force the next step.
+        bootstrap = _bootstrap_resolve_read(
+            authorized_reads, tuple(state.get("attempts", []))
+        )
+        if bootstrap is not None:
+            return {
+                **base,
+                "route": "resolve_read",
+                "pending_read": bootstrap,
+                "iteration": iteration + 1,
+            }
+        return {
+            **base,
+            "route": "plan_write",
+            "write_calls": [],
+            "pending_read": None,
+            "iteration": iteration + 1,
+        }
 
     async def resolve_read(state: GraphState) -> dict[str, Any]:
         # Reuse the read path's dispatch helper so a write-time resolution read is
@@ -411,7 +451,12 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
     async def compose_writes(state: GraphState) -> dict[str, Any]:
         outcomes = state.get("write_outcomes", [])
         completed = [o for o in outcomes if o.status == "completed"]
+        entitled = bool(state.get("entitled_writes"))
         if not outcomes:
+            if entitled:
+                reason = state.get("reason") or "no_write_executed"
+                emit("agent.completed", {"status": "failed", "writeCount": 0})
+                return {"answer": None, "status": "failed", "reason": reason}
             answer = await deps.reasoner.compose_writes(goal=state["goal"], outcomes=())
             return {"answer": answer or "No actions were required.", "status": "completed"}
         if completed:
@@ -464,6 +509,7 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
             "resolve_read": "resolve_read",
             "dispatch_writes": "dispatch_writes",
             "compose_writes": "compose_writes",
+            "plan_write": "plan_write",
         },
     )
     builder.add_edge("resolve_read", "plan_write")
@@ -560,6 +606,52 @@ def _authorized_write_ids(authorize: Authorizer | None) -> tuple[str, ...]:
     if authorize is None:
         return ()
     return tuple(cap_id for cap_id in write_capability_ids() if authorize(cap_id)[0])
+
+
+# Preferred resolver reads when the planner refuses to advance (bootstrap order).
+_RESOLVE_READ_PRIORITY: tuple[str, ...] = (
+    "issues.list",
+    "actions.list",
+    "actions.next",
+    "customers.search",
+    "sales.list",
+    "issues.list.pendingForCustomer",
+)
+
+
+def _used_read_capability_ids(history: tuple[QueryAttempt, ...]) -> set[str]:
+    return {
+        attempt.capability_id
+        for attempt in history
+        if attempt.source == "capability" and attempt.capability_id
+    }
+
+
+def _bootstrap_resolve_read(
+    authorized_reads: tuple[str, ...],
+    history: tuple[QueryAttempt, ...],
+) -> CapabilityCall | None:
+    """Pick the next entitled resolver when the planner did not advance.
+
+    RBAC already granted read+write access; this keeps the resolve→act loop
+    moving without letting the model veto execution as "unsafe".
+    """
+    used = _used_read_capability_ids(history)
+    for capability_id in _RESOLVE_READ_PRIORITY:
+        if capability_id in authorized_reads and capability_id not in used:
+            return CapabilityCall(
+                capability_id=capability_id,
+                tool_input={},
+                rationale="bootstrap resolve (entitled read)",
+            )
+    for capability_id in authorized_reads:
+        if capability_id not in used:
+            return CapabilityCall(
+                capability_id=capability_id,
+                tool_input={},
+                rationale="bootstrap resolve (entitled read)",
+            )
+    return None
 
 
 def _authorized_read_ids(authorize: Authorizer | None) -> tuple[str, ...]:

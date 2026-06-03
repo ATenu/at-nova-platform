@@ -10,22 +10,71 @@ import type {
   CustomerDto,
   CustomerIssueDto,
   IssueActionDto,
+  PermissionDto,
   ProductDto,
+  RoleDto,
   SaleDto,
   SopDto,
   UserDto,
 } from '@/api/types';
-import { ROLE_PERMISSIONS, type NovaRole } from '@/auth/permissions';
 
 /** Strip top-level `readonly` so the in-memory mock stores can be mutated. */
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
 const now = '2026-05-30T12:00:00.000Z';
 
-function permissionsFor(roles: readonly NovaRole[]): string[] {
+/**
+ * Mock RBAC seed mirroring the backend authoritative catalog. The dev mock
+ * treats this as a single mutable registry so the editable admin UI and the
+ * `/rbac/registry` + `/auth/me` endpoints stay consistent in dev mode.
+ */
+export const rbacStore: {
+  revision: number;
+  roles: Mutable<RoleDto>[];
+  permissions: Mutable<PermissionDto>[];
+  rolePermissions: Record<string, string[]>;
+} = {
+  revision: 1,
+  roles: [
+    { name: 'sales-user', description: 'Sales team', isSystem: true },
+    { name: 'support-operations-user', description: 'Operations and maintenance team', isSystem: true },
+    { name: 'admin', description: 'System administrator', isSystem: true },
+    { name: 'customer-support', description: 'Customer support team', isSystem: true },
+    { name: 'ops-compliance', description: 'Compliance team', isSystem: true },
+  ],
+  permissions: [
+    'read-customers', 'write-customers', 'create-issues', 'read-issues', 'write-issues',
+    'read-sales', 'write-sales', 'read-permissions', 'write-permissions', 'read-actions',
+    'write-actions', 'read-sop', 'write-sop', 'read-users', 'write-users',
+    'create-agent-run', 'read-agent-run', 'cancel-agent-run',
+  ].map((name) => ({ name, description: null, isSystem: true })),
+  rolePermissions: {
+    'sales-user': [
+      'read-customers', 'write-customers', 'read-issues', 'read-sales', 'write-sales',
+      'read-actions', 'read-sop', 'create-agent-run', 'read-agent-run', 'cancel-agent-run',
+    ],
+    'support-operations-user': [
+      'read-customers', 'write-customers', 'read-issues', 'write-issues', 'read-sales',
+      'read-actions', 'write-actions', 'read-sop', 'create-agent-run', 'read-agent-run', 'cancel-agent-run',
+    ],
+    admin: [
+      'read-customers', 'write-customers', 'create-issues', 'read-issues', 'write-issues',
+      'read-sales', 'write-sales', 'read-permissions', 'write-permissions', 'read-actions',
+      'write-actions', 'read-sop', 'write-sop', 'read-users', 'write-users',
+      'create-agent-run', 'read-agent-run', 'cancel-agent-run',
+    ],
+    'ops-compliance': ['read-sop', 'write-sop', 'create-agent-run', 'read-agent-run', 'cancel-agent-run'],
+    'customer-support': [
+      'read-customers', 'create-issues', 'read-issues', 'write-issues', 'read-sales',
+      'read-actions', 'write-actions', 'create-agent-run', 'read-agent-run', 'cancel-agent-run',
+    ],
+  },
+};
+
+export function permissionsFor(roles: readonly string[]): string[] {
   const set = new Set<string>();
   for (const role of roles) {
-    for (const permission of ROLE_PERMISSIONS[role]) {
+    for (const permission of rbacStore.rolePermissions[role] ?? []) {
       set.add(permission);
     }
   }
@@ -38,7 +87,7 @@ interface SeedUser {
   firstName: string;
   lastName: string;
   description: string;
-  role: NovaRole;
+  role: string;
 }
 
 const seedUsers: readonly SeedUser[] = [

@@ -64,9 +64,12 @@ describe('capability catalog', () => {
     expect(rolesGrantCapability(['admin'], 'unknown.capability')).toBe(false);
   });
 
-  it('flags only high-risk capabilities for approval', () => {
+  it('requires approval only when explicitly opted in (decoupled from risk)', () => {
+    // Approval is an explicit, admin-editable property (default false), not a
+    // function of risk. The shipped catalog opts no capability into approval, so
+    // permission consent alone authorizes execution regardless of risk level.
     for (const capability of CAPABILITY_CATALOG) {
-      expect(capabilityRequiresApproval(capability)).toBe(capability.risk === 'high');
+      expect(capabilityRequiresApproval(capability)).toBe(capability.requiresApproval === true);
     }
   });
 
@@ -188,15 +191,15 @@ describe('capability catalog', () => {
     }
   });
 
-  it('treats data.act.write as a high-risk dispatch skill (no standalone write permission)', () => {
+  it('treats data.act.write as a dispatch skill (no standalone write permission)', () => {
     const dispatch = getCapability('data.act.write');
     expect(dispatch).toBeDefined();
     expect(dispatch!.mode).toBe('write');
-    expect(dispatch!.risk).toBe('high');
     // It never carries a write permission; it is only a delegation entry point
     // gated on the universal create-agent-run, while concrete writes stay gated on
-    // their own permission + approval, so the agent cannot mint new write authority.
+    // their own permission, so the agent cannot mint new write authority.
     expect(dispatch!.requiredPermissions).toEqual(['create-agent-run']);
-    expect(capabilityRequiresApproval(dispatch!)).toBe(true);
+    // Approval is opt-in (default false): permission consent alone authorizes it.
+    expect(capabilityRequiresApproval(dispatch!)).toBe(false);
   });
 });

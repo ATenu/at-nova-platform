@@ -36,8 +36,11 @@ import { SopService } from './modules/sops/sop.service';
 import { createSopRouter } from './modules/sops/sop.routes';
 import { AdminUserService } from './modules/admin/admin-user.service';
 import { RbacService } from './modules/admin/rbac.service';
+import { RbacAdminService } from './modules/admin/rbac-admin.service';
 import { KeycloakProvisioningService } from './modules/admin/keycloak-provisioning.service';
 import { createAdminRouter } from './modules/admin/admin.routes';
+import { createRbacRegistryRouter } from './modules/rbac/rbac-registry.routes';
+import { createInternalRbacRegistryRouter } from './modules/rbac/internal-rbac-registry.routes';
 import { ConversationRepository } from './modules/chat/conversation.repository';
 import { ChatService } from './modules/chat/chat.service';
 import { createConversationsRouter } from './modules/chat/chat.routes';
@@ -49,11 +52,18 @@ import { ToolGatewayService } from './modules/agent-runs/tool-gateway.service';
 import { createToolGatewayRouter } from './modules/agent-runs/tool-gateway.routes';
 import { ServiceTokenVerifier } from './auth/service-token-verifier';
 import { createServiceAuthenticate } from './auth/service-authenticate';
+import { RbacRegistryService } from './rbac/rbac-registry.service';
 
 export interface AppDependencies {
   readonly config: ApiConfig;
   readonly logger: Logger;
   readonly dataSource: DataSource;
+  /**
+   * DB-driven RBAC registry service. Provides the in-memory policy snapshot used
+   * by enforcement and is refreshed by the admin mutation surface. When omitted,
+   * a self-contained instance is created (used in tests; not auto-started).
+   */
+  readonly rbacRegistryService?: RbacRegistryService;
   /**
    * Shared cache/rate-limit Redis. `null` (or omitted) falls back to an
    * in-memory rate-limit store that is not shared across replicas.
@@ -91,6 +101,8 @@ function buildCorsOptions(config: ApiConfig): cors.CorsOptions {
  */
 export function createApp(deps: AppDependencies): Express {
   const { config, logger, dataSource, cacheRedis = null, agentsDataSource = null } = deps;
+  const rbacRegistryService =
+    deps.rbacRegistryService ?? new RbacRegistryService(dataSource, logger);
   const app = express();
 
   app.disable('x-powered-by');
@@ -160,7 +172,13 @@ export function createApp(deps: AppDependencies): Express {
   const actionService = new ActionService(actionRepository, userRepository);
   const sopService = new SopService(sopRepository, userRepository);
   const adminUserService = new AdminUserService(userRepository, provisioning);
-  const rbacService = new RbacService(dataSource);
+  const rbacService = new RbacService();
+  const rbacAdminService = new RbacAdminService(
+    dataSource,
+    rbacRegistryService,
+    provisioning,
+    logger,
+  );
   const chatService = new ChatService(conversationRepository, userRepository);
 
   app.use('/health', createHealthRouter({ dataSource, cacheRedis }));
@@ -171,7 +189,11 @@ export function createApp(deps: AppDependencies): Express {
   app.use('/api/v1/issues', createIssueRouter({ authenticate, service: issueService }));
   app.use('/api/v1/actions', createActionRouter({ authenticate, service: actionService }));
   app.use('/api/v1/sops', createSopRouter({ authenticate, service: sopService }));
-  app.use('/api/v1/admin', createAdminRouter({ authenticate, userService: adminUserService, rbacService }));
+  app.use(
+    '/api/v1/admin',
+    createAdminRouter({ authenticate, userService: adminUserService, rbacService, rbacAdminService }),
+  );
+  app.use('/api/v1/rbac', createRbacRegistryRouter({ authenticate, registryService: rbacRegistryService }));
   app.use('/api/v1/conversations', createConversationsRouter({ authenticate, service: chatService }));
 
   // Asynchronous agent orchestration (control plane). Mounted only when the
@@ -247,6 +269,31 @@ export function createApp(deps: AppDependencies): Express {
       }),
     );
     logger.info('internal MCP tool gateway mounted');
+
+    // Internal RBAC registry: the dynamic, DB-driven policy source for the
+    // execution plane (orchestrator worker + A2A agents). It accepts a service
+    // token from either the tool-gateway or the entitlement caller set (azp
+    // pinned), so both the worker and the agents can build their Layer B view
+    // and capability catalog from the same authoritative policy.
+    const registryAuthenticate = createServiceAuthenticate(
+      new ServiceTokenVerifier({
+        issuerUrl: config.auth.issuerUrl,
+        jwksUri: config.auth.jwksUri,
+        audience: [config.toolGateway.audience, config.entitlementEndpoint.audience],
+        authorizedParties: [
+          ...config.toolGateway.authorizedParties,
+          ...config.entitlementEndpoint.authorizedParties,
+        ],
+      }),
+    );
+    app.use(
+      '/internal/rbac',
+      createInternalRbacRegistryRouter({
+        serviceAuthenticate: registryAuthenticate,
+        registryService: rbacRegistryService,
+      }),
+    );
+    logger.info('internal RBAC registry mounted');
   } else {
     logger.info('agent-runs surface not mounted (AGENTS_DATABASE_URL not configured)');
   }

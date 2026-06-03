@@ -225,6 +225,22 @@ class FakeSnapshotClient:
         return self._snapshot
 
 
+class FakeRegistryClient:
+    """No-network registry client: the autouse fixture seeds the active policy.
+
+    ``refresh`` is a no-op so the executor's per-task refresh succeeds offline;
+    set ``error`` to simulate a registry outage (the agent must then fail closed).
+    """
+
+    def __init__(self) -> None:
+        self.error: Exception | None = None
+
+    def refresh(self) -> object:
+        if self.error is not None:
+            raise self.error
+        return None
+
+
 def make_snapshot(
     *,
     roles: tuple[str, ...] = ("ops-compliance",),
@@ -233,12 +249,19 @@ def make_snapshot(
         "data.query.select",
         "data.schema.describe",
     ),
+    permissions: frozenset[str] | None = None,
 ) -> VerifiedSnapshot:
+    # Layer B now authorizes against the snapshot's effective PERMISSIONS, so the
+    # snapshot's permissions must reflect the roles (resolved from the seeded
+    # active registry), exactly as the API edge captures them.
+    from at_sql_analyser.authz.registry import permissions_for_roles
+
+    resolved = permissions if permissions is not None else frozenset(permissions_for_roles(roles))
     return VerifiedSnapshot(
         run_id="run-1",
         owner_subject="user-1",
         roles=roles,
-        permissions=frozenset({"create-agent-run", "read-sop"}),
+        permissions=resolved,
         capability_allowlist=frozenset(allowlist),
         expires_at=datetime.now(UTC) + timedelta(minutes=5),
     )

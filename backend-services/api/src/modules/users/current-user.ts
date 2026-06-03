@@ -19,6 +19,16 @@ export async function resolveCurrentUser(
   repository: UserRepository,
   auth: AuthContext,
 ): Promise<UserWithRoles> {
+  if (auth.applicationUserId) {
+    const pinned = await repository.findById(auth.applicationUserId);
+    if (!pinned) {
+      throw new UnauthenticatedError('Entitlement snapshot references an unknown user.');
+    }
+    // The entitlement snapshot is integrity-checked before use; ownerUserId was
+    // captured at authenticated run submission and is authoritative here.
+    return pinned;
+  }
+
   if (!auth.subject) {
     throw new UnauthenticatedError('Token is missing a subject.');
   }

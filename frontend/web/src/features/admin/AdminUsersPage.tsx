@@ -3,8 +3,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { listUsers, syncUserToKeycloak } from '@/api/admin.api';
 import { queryKeys } from '@/api/queryClient';
 import type { AdminUserDto, KeycloakSyncStatus } from '@/api/types';
-import { NOVA_ROLES, roleLabel } from '@/auth/permissions';
+import { roleLabel } from '@/auth/permissions';
 import { useAuth } from '@/auth/AuthProvider';
+import { useRbacRegistry } from '@/auth/RbacRegistryProvider';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { PermissionGate } from '@/components/layout/PermissionGate';
 import { Card } from '@/components/ui/Card';
@@ -40,6 +41,7 @@ export function AdminUsersPage() {
   const { can } = useAuth();
   const toast = useToast();
   const queryClient = useQueryClient();
+  const { roles: availableRoles } = useRbacRegistry();
   const canWrite = can('write-users');
 
   const [search, setSearch] = useState('');
@@ -141,9 +143,9 @@ export function AdminUsersPage() {
         <SearchInput value={search} onChange={(value) => { setSearch(value); setPage(1); }} placeholder="Search by name or email…" />
         <Select value={role} onChange={(e) => { setRole(e.target.value); setPage(1); }} style={{ maxWidth: 220 }}>
           <option value="">All roles</option>
-          {NOVA_ROLES.map((r) => (
-            <option key={r} value={r}>
-              {roleLabel(r)}
+          {availableRoles.map((r) => (
+            <option key={r.name} value={r.name}>
+              {roleLabel(r.name)}
             </option>
           ))}
         </Select>

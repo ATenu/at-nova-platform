@@ -1,11 +1,16 @@
-import type { Role, Permission } from '@nova/shared';
-import { permissionsForRoles, toKnownRoles } from '@nova/shared';
 import type { JWTPayload } from 'jose';
+import { getActiveRegistry } from '../rbac/registry-holder';
 
 /**
  * Normalized, typed representation of the authenticated principal. Built once
  * from a fully validated token and carried through the request. Feature code
  * reads this instead of touching raw claims.
+ *
+ * Roles are the realm roles from the token that are known to the platform's
+ * DB-driven RBAC registry; permissions are resolved from those roles through the
+ * same registry the authorization layer enforces. Both are plain strings because
+ * roles and permissions are now admin-authorable at runtime (default deny: an
+ * unknown role grants nothing).
  */
 export interface AuthContext {
   readonly subject: string;
@@ -15,9 +20,15 @@ export interface AuthContext {
   readonly username: string | undefined;
   readonly givenName: string | undefined;
   readonly familyName: string | undefined;
-  readonly roles: readonly Role[];
-  readonly permissions: ReadonlySet<Permission>;
+  readonly roles: readonly string[];
+  readonly permissions: ReadonlySet<string>;
   readonly scopes: readonly string[];
+  /**
+   * Application user id pinned by an agent-run entitlement snapshot. Set only on
+   * the execution plane when reconstructing auth from the snapshot; HTTP routes
+   * resolve the user from validated token claims instead.
+   */
+  readonly applicationUserId?: string;
 }
 
 interface KeycloakRealmAccess {
@@ -57,7 +68,8 @@ function asAudience(value: JWTPayload['aud']): string[] {
 
 /** Build a typed AuthContext from a verified token payload. */
 export function buildAuthContext(payload: JWTPayload): AuthContext {
-  const roles = toKnownRoles(extractRealmRoles(payload));
+  const registry = getActiveRegistry();
+  const roles = registry.knownRoles(extractRealmRoles(payload));
   return {
     subject: payload.sub ?? '',
     issuer: payload.iss ?? '',
@@ -67,7 +79,7 @@ export function buildAuthContext(payload: JWTPayload): AuthContext {
     givenName: asString(payload['given_name']),
     familyName: asString(payload['family_name']),
     roles,
-    permissions: permissionsForRoles(roles),
+    permissions: registry.permissionsForRoles(roles),
     scopes: extractScopes(payload),
   };
 }

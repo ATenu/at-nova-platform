@@ -4,7 +4,8 @@ import { z } from 'zod';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { createUser, type CreateUserRequest } from '@/api/admin.api';
 import { queryKeys } from '@/api/queryClient';
-import { NOVA_ROLES, roleLabel } from '@/auth/permissions';
+import { roleLabel } from '@/auth/permissions';
+import { useRbacRegistry } from '@/auth/RbacRegistryProvider';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { FormField, TextInput } from '@/components/ui/FormField';
@@ -17,7 +18,7 @@ const createUserSchema = z.object({
   lastName: z.string().trim().min(1, 'Last name is required'),
   middleName: z.string().trim().optional(),
   description: z.string().trim().optional(),
-  roles: z.array(z.enum(NOVA_ROLES)).min(1, 'Assign at least one role'),
+  roles: z.array(z.string().min(1)).min(1, 'Assign at least one role'),
   sendResetPasswordEmail: z.boolean().optional(),
 });
 
@@ -26,6 +27,7 @@ type CreateUserForm = z.input<typeof createUserSchema>;
 export function UserFormModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const toast = useToast();
   const queryClient = useQueryClient();
+  const { roles: availableRoles } = useRbacRegistry();
 
   const {
     register,
@@ -112,10 +114,10 @@ export function UserFormModal({ open, onClose }: { open: boolean; onClose: () =>
 
         <FormField label="Roles" error={errors.roles?.message}>
           <div className="stack" style={{ gap: 8 }}>
-            {NOVA_ROLES.map((role) => (
-              <label key={role} className="checkbox">
-                <input type="checkbox" value={role} {...register('roles')} />
-                {roleLabel(role)}
+            {availableRoles.map((role) => (
+              <label key={role.name} className="checkbox">
+                <input type="checkbox" value={role.name} {...register('roles')} />
+                {roleLabel(role.name)}
               </label>
             ))}
           </div>

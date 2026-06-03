@@ -14,8 +14,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "jest --passWithNoTests",
-    "rbac:export": "node scripts/export-rbac.mjs"
+    "test": "jest --passWithNoTests"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

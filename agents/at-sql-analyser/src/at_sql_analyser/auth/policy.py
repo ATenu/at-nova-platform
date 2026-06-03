@@ -29,7 +29,7 @@ def authorize(
     """Authoritative decision for a capability against the verified snapshot."""
     if capability_id not in snapshot.capability_allowlist:
         return PolicyDecision(False, capability_id, REASON_NOT_IN_ALLOWLIST)
-    return evaluate_capability(capability_id, snapshot.roles, has_approval=has_approval)
+    return evaluate_capability(capability_id, snapshot.permissions, has_approval=has_approval)
 
 
 def is_entitled(snapshot: VerifiedSnapshot, capability_id: str) -> bool:

@@ -1,5 +1,10 @@
 import { permissionsForRoles, type Permission } from '@nova/shared';
 import { buildEntitlementSnapshot, computeSnapshotHash } from './entitlement-snapshot';
+import { getActiveRegistry } from '../../rbac/registry-holder';
+
+/** Resolve capability ids via the default (static catalog) registry. */
+const resolveCapabilityAllowlist = (permissions: ReadonlySet<string>): readonly string[] =>
+  getActiveRegistry().capabilityAllowlist(permissions);
 
 /**
  * Cross-language integrity contract. The Python worker recomputes this exact
@@ -51,6 +56,7 @@ describe('buildEntitlementSnapshot', () => {
       ownerUserId: '11111111-1111-1111-1111-111111111111',
       roles: ['customer-support'],
       permissions,
+      resolveCapabilityAllowlist,
       ttlSeconds: 7200,
       now,
     });
@@ -66,6 +72,7 @@ describe('buildEntitlementSnapshot', () => {
       ownerUserId: '11111111-1111-1111-1111-111111111111',
       roles: ['sales-user'],
       permissions: new Set<Permission>(['read-sales']),
+      resolveCapabilityAllowlist,
       ttlSeconds: 3600,
       now,
     });
@@ -79,6 +86,7 @@ describe('buildEntitlementSnapshot', () => {
       ownerUserId: '22222222-2222-2222-2222-222222222222',
       roles: ['sales-user'] as const,
       permissions: permissionsForRoles(['sales-user']),
+      resolveCapabilityAllowlist,
       ttlSeconds: 7200,
       now,
     };

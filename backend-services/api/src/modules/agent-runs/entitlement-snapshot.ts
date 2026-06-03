@@ -1,9 +1,4 @@
-import {
-  capabilitiesForPermissions,
-  computeSnapshotHash,
-  type Permission,
-  type Role,
-} from '@nova/shared';
+import { computeSnapshotHash } from '@nova/shared';
 
 export { computeSnapshotHash } from '@nova/shared';
 
@@ -38,8 +33,14 @@ export interface EntitlementSnapshot {
 export interface BuildEntitlementSnapshotInput {
   readonly ownerSubject: string;
   readonly ownerUserId: string;
-  readonly roles: readonly Role[];
-  readonly permissions: ReadonlySet<Permission>;
+  readonly roles: readonly string[];
+  readonly permissions: ReadonlySet<string>;
+  /**
+   * Resolves the capability allowlist from the permission set using the
+   * DB-driven RBAC registry (default deny). Injected so the snapshot reflects
+   * current, admin-editable capability policy rather than a static catalog.
+   */
+  readonly resolveCapabilityAllowlist: (permissions: ReadonlySet<string>) => readonly string[];
   readonly ttlSeconds: number;
   /** Injectable for deterministic tests. */
   readonly now?: Date;
@@ -62,9 +63,7 @@ export function buildEntitlementSnapshot(input: BuildEntitlementSnapshotInput): 
 
   const roles = sortedUnique([...input.roles]);
   const permissions = sortedUnique([...input.permissions]);
-  const capabilityAllowlist = sortedUnique(
-    capabilitiesForPermissions(input.permissions).map((capability) => capability.id),
-  );
+  const capabilityAllowlist = sortedUnique([...input.resolveCapabilityAllowlist(input.permissions)]);
 
   const snapshotHash = computeSnapshotHash({
     ownerSubject: input.ownerSubject,

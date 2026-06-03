@@ -52,7 +52,7 @@ select = ["E", "F", "I", "B", "UP", "ANN", "S"]
 # The Langfuse wiring wraps an untyped third-party SDK at a fail-soft boundary:
 # Any is intrinsic to its surface (ANN401) and best-effort flush swallows errors
 # by design (S110). Both are deliberate, not lint evasion.
-per-file-ignores = { "tests/*" = ["S101", "S105", "S106", "S608", "ANN"], "src/at_sql_analyser/authz/nova_authz.py" = ["E501", "I001"], "src/at_sql_analyser/observability/langfuse_tracing.py" = ["ANN401", "S110"] }
+per-file-ignores = { "tests/*" = ["S101", "S105", "S106", "S608", "ANN"], "src/at_sql_analyser/observability/langfuse_tracing.py" = ["ANN401", "S110"] }
 
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = ["fastapi.Depends", "fastapi.Header", "fastapi.Query"]

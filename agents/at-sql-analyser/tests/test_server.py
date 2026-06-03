@@ -23,6 +23,7 @@ from .fakes import (  # noqa: E402
     FakeCapabilityClient,
     FakeDataClient,
     FakeReasoner,
+    FakeRegistryClient,
     FakeResourceServer,
     FakeSnapshotClient,
     make_snapshot,
@@ -90,6 +91,7 @@ def build_client(
         make_config(),
         reasoner=the_reasoner,
         snapshot_client=snap_client,
+        registry_client=FakeRegistryClient(),
         resource_server=FakeResourceServer(),
         data_client_factory=lambda _run_id: data,
         capability_client=cap_client,
@@ -275,13 +277,16 @@ def test_denied_when_skill_not_in_allowlist() -> None:
     assert result_data(send_task(client))["status"] == "denied"
 
 
-def test_high_risk_write_needs_approval() -> None:
-    snap = make_snapshot(roles=("admin",), allowlist=("data.act.write",))
-    client, _, cap = build_client(snapshot=snap)
+def test_write_proceeds_without_approval_by_default() -> None:
+    # Approval is opt-in (default false) and decoupled from risk: an entitled
+    # user's write is authorized by permission consent alone and dispatches the
+    # concrete capability without a separate approval step.
+    snap = make_snapshot(roles=("admin",), allowlist=("data.act.write", "issues.create"))
+    reasoner = FakeReasoner(writes=[WriteItem(capability_id="issues.create", input={"title": "x"})])
+    client, _, cap = build_client(snapshot=snap, reasoner=reasoner)
     body = result_data(send_task(client, skill_id="data.act.write"))
-    assert body["status"] == "needs_approval"
-    assert body["reason"] == "approval_required"
-    assert cap.calls == []  # nothing dispatched without approval
+    assert body["status"] == "completed"
+    assert cap.calls == [("issues.create", "agent-write:run-1:issues.create:0")]
 
 
 def test_approved_write_dispatches_entitled_capability() -> None:
@@ -312,6 +317,30 @@ def test_snapshot_unavailable_denies() -> None:
     body = result_data(send_task(client))
     assert body["status"] == "denied"
     assert body["reason"] == "entitlement_unavailable"
+
+
+def test_registry_outage_fails_closed() -> None:
+    # The dynamic policy source is unavailable: the agent must deny rather than
+    # authorize against absent policy (fail closed).
+    from at_sql_analyser.authz.rbac_registry import RbacRegistryError
+
+    registry = FakeRegistryClient()
+    registry.error = RbacRegistryError("registry down")
+    data = FakeDataClient()
+    snap_client = FakeSnapshotClient(make_snapshot())
+    app = create_app(
+        make_config(),
+        reasoner=FakeReasoner(answer="ok"),
+        snapshot_client=snap_client,
+        registry_client=registry,
+        resource_server=FakeResourceServer(),
+        data_client_factory=lambda _run_id: data,
+        capability_client=FakeCapabilityClient(),
+        catalog=[],
+    )
+    body = result_data(send_task(TestClient(app)))
+    assert body["status"] == "denied"
+    assert body["reason"] == "registry_unavailable"
 
 
 def test_unknown_skill_rejected() -> None:

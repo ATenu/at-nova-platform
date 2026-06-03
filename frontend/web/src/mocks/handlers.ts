@@ -1,6 +1,5 @@
 import { http, HttpResponse, type DefaultBodyType, type PathParams } from 'msw';
 import { env } from '@/lib/env';
-import { NOVA_ROLES, ROLE_PERMISSIONS, type NovaRole } from '@/auth/permissions';
 import type {
   ActionCommentDto,
   AdminUserDto,
@@ -10,17 +9,19 @@ import type {
   IssueActionStatus,
   MessageDto,
   PaginatedResult,
+  RbacRegistryDto,
   SaleDto,
   SopDto,
 } from '@/api/types';
 import {
   actionsStore,
-  ALL_PERMISSIONS,
   conversationsStore,
   customersStore,
   findUserByEmail,
   issuesStore,
+  permissionsFor,
   productsStore,
+  rbacStore,
   salesStore,
   sopsStore,
   usersStore,
@@ -65,23 +66,29 @@ function paginate<T>(items: readonly T[], url: URL): PaginatedResult<T> {
   };
 }
 
-function permissionsForRoles(roles: readonly NovaRole[]): string[] {
-  const set = new Set<string>();
-  for (const role of roles) {
-    for (const permission of ROLE_PERMISSIONS[role]) {
-      set.add(permission);
-    }
-  }
-  return [...set];
-}
-
-// Mutable role -> permission grants for the admin matrix.
-const roleGrants: Record<string, string[]> = Object.fromEntries(
-  NOVA_ROLES.map((role) => [role, [...ROLE_PERMISSIONS[role]]]),
-);
-
 let idCounter = 1000;
 const nextId = (prefix: string) => `${prefix}-${++idCounter}`;
+
+/** Build the effective registry payload from the mutable mock RBAC store. */
+function registrySnapshot(): RbacRegistryDto {
+  return {
+    revision: rbacStore.revision,
+    roles: rbacStore.roles.map((role) => ({ ...role })),
+    permissions: rbacStore.permissions.map((permission) => ({ ...permission })),
+    rolePermissions: Object.fromEntries(
+      Object.entries(rbacStore.rolePermissions).map(([role, perms]) => [role, [...perms]]),
+    ),
+    capabilities: [],
+    routePolicies: [],
+    viewPermissions: [],
+  };
+}
+
+/** Bump the revision and return the standard write result envelope. */
+function writeResult() {
+  rbacStore.revision += 1;
+  return HttpResponse.json({ registry: registrySnapshot(), keycloak: { status: 'synced', lastSyncError: null } });
+}
 
 export const handlers = [
   http.get(`${API}/auth/me`, ({ request }) => {
@@ -97,7 +104,15 @@ export const handlers = [
       middleName: user.middleName ?? null,
       description: user.description ?? null,
       roles: user.roles,
-      permissions: user.permissions,
+      permissions: permissionsFor(user.roles),
+    });
+  }),
+
+  // ---- Dynamic RBAC registry (single source for the frontend) ----
+  http.get(`${API}/rbac/registry`, ({ request }) => {
+    if (!emailFromRequest(request)) return unauthorized();
+    return HttpResponse.json(registrySnapshot(), {
+      headers: { ETag: `"${rbacStore.revision}"` },
     });
   }),
 
@@ -127,9 +142,10 @@ export const handlers = [
       lastName: string;
       middleName?: string | null;
       description?: string | null;
-      roles: NovaRole[];
+      roles: string[];
     };
-    const roles = body.roles.filter((role): role is NovaRole => NOVA_ROLES.includes(role));
+    const known = new Set(rbacStore.roles.map((role) => role.name));
+    const roles = body.roles.filter((role) => known.has(role));
     const user: AdminUserDto = {
       id: nextId('user'),
       email: body.email,
@@ -138,7 +154,7 @@ export const handlers = [
       middleName: body.middleName ?? null,
       description: body.description ?? null,
       roles,
-      permissions: permissionsForRoles(roles),
+      permissions: permissionsFor(roles),
       active: true,
       createdAt: ts(),
       updatedAt: ts(),
@@ -159,10 +175,11 @@ export const handlers = [
   http.put(`${API}/admin/users/:id/roles`, async ({ params, request }) => {
     const user = usersStore.find((u) => u.id === params.id);
     if (!user) return notFound('User not found.');
-    const { roles } = (await request.json()) as { roles: NovaRole[] };
-    const valid = roles.filter((role): role is NovaRole => NOVA_ROLES.includes(role));
+    const { roles } = (await request.json()) as { roles: string[] };
+    const known = new Set(rbacStore.roles.map((role) => role.name));
+    const valid = roles.filter((role) => known.has(role));
     user.roles = valid;
-    user.permissions = permissionsForRoles(valid);
+    user.permissions = permissionsFor(valid);
     user.keycloak = { ...user.keycloak, syncedRoles: valid, syncStatus: 'synced' };
     user.updatedAt = ts();
     return HttpResponse.json(user);
@@ -175,32 +192,78 @@ export const handlers = [
     return HttpResponse.json(user);
   }),
 
-  // ---- Admin: roles & permissions ----
-  http.get(`${API}/admin/roles`, () =>
-    HttpResponse.json(NOVA_ROLES.map((name) => ({ name }))),
-  ),
-  http.get(`${API}/admin/permissions`, () =>
-    HttpResponse.json(ALL_PERMISSIONS.map((name) => ({ name }))),
-  ),
-  http.get(`${API}/admin/role-permissions`, () =>
-    HttpResponse.json({
-      roles: NOVA_ROLES.map((name) => ({ name })),
-      permissions: ALL_PERMISSIONS.map((name) => ({ name })),
-      grants: roleGrants,
-      totalGrants: Object.values(roleGrants).reduce((sum, list) => sum + list.length, 0),
-    }),
-  ),
+  // ---- Admin: roles & permissions (DB-driven, mutable) ----
+  http.get(`${API}/admin/roles`, () => HttpResponse.json(registrySnapshot().roles)),
+  http.get(`${API}/admin/permissions`, () => HttpResponse.json(registrySnapshot().permissions)),
+  http.get(`${API}/admin/role-permissions`, () => {
+    const grants = registrySnapshot().rolePermissions;
+    return HttpResponse.json({
+      roles: registrySnapshot().roles,
+      permissions: registrySnapshot().permissions,
+      grants,
+      totalGrants: Object.values(grants).reduce((sum, list) => sum + list.length, 0),
+    });
+  }),
+
+  http.post(`${API}/admin/roles`, async ({ request }) => {
+    const body = (await request.json()) as { name: string; description?: string | null };
+    if (rbacStore.roles.some((role) => role.name === body.name)) {
+      return HttpResponse.json({ code: 'conflict', title: 'Role already exists.', status: 409 }, { status: 409 });
+    }
+    rbacStore.roles.push({ name: body.name, description: body.description ?? null, isSystem: false });
+    rbacStore.rolePermissions[body.name] = [];
+    return writeResult();
+  }),
+  http.patch(`${API}/admin/roles/:roleName`, async ({ params, request }) => {
+    const role = rbacStore.roles.find((r) => r.name === String(params.roleName));
+    if (!role) return notFound('Role not found.');
+    const body = (await request.json()) as { description?: string | null };
+    role.description = body.description ?? null;
+    return writeResult();
+  }),
+  http.delete(`${API}/admin/roles/:roleName`, ({ params }) => {
+    const name = String(params.roleName);
+    const role = rbacStore.roles.find((r) => r.name === name);
+    if (!role) return notFound('Role not found.');
+    if (role.isSystem) {
+      return HttpResponse.json({ code: 'forbidden', title: 'Cannot delete a system role.', status: 403 }, { status: 403 });
+    }
+    rbacStore.roles = rbacStore.roles.filter((r) => r.name !== name);
+    delete rbacStore.rolePermissions[name];
+    return writeResult();
+  }),
   http.put(`${API}/admin/roles/:roleName/permissions`, async ({ params, request }) => {
     const role = String(params.roleName);
-    if (!roleGrants[role]) return notFound('Role not found.');
+    if (!rbacStore.rolePermissions[role]) return notFound('Role not found.');
     const { permissions } = (await request.json()) as { permissions: string[] };
-    roleGrants[role] = permissions;
-    return HttpResponse.json({
-      roles: NOVA_ROLES.map((name) => ({ name })),
-      permissions: ALL_PERMISSIONS.map((name) => ({ name })),
-      grants: roleGrants,
-      totalGrants: Object.values(roleGrants).reduce((sum, list) => sum + list.length, 0),
-    });
+    const known = new Set(rbacStore.permissions.map((p) => p.name));
+    rbacStore.rolePermissions[role] = permissions.filter((p) => known.has(p));
+    return writeResult();
+  }),
+
+  http.post(`${API}/admin/permissions`, async ({ request }) => {
+    const body = (await request.json()) as { name: string; description?: string | null };
+    if (rbacStore.permissions.some((p) => p.name === body.name)) {
+      return HttpResponse.json({ code: 'conflict', title: 'Permission already exists.', status: 409 }, { status: 409 });
+    }
+    rbacStore.permissions.push({ name: body.name, description: body.description ?? null, isSystem: false });
+    return writeResult();
+  }),
+  http.delete(`${API}/admin/permissions/:name`, ({ params }) => {
+    const name = String(params.name);
+    const permission = rbacStore.permissions.find((p) => p.name === name);
+    if (!permission) return notFound('Permission not found.');
+    if (permission.isSystem) {
+      return HttpResponse.json({ code: 'forbidden', title: 'Cannot delete a system permission.', status: 403 }, { status: 403 });
+    }
+    rbacStore.permissions = rbacStore.permissions.filter((p) => p.name !== name);
+    for (const role of Object.keys(rbacStore.rolePermissions)) {
+      const grants = rbacStore.rolePermissions[role];
+      if (grants) {
+        rbacStore.rolePermissions[role] = grants.filter((p) => p !== name);
+      }
+    }
+    return writeResult();
   }),
 
   // ---- Customers ----

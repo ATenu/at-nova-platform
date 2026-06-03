@@ -537,7 +537,7 @@ def _run_agent_step(
         approval_granted
         and deps.auto_approve_writes
         and capability is not None
-        and getattr(capability, "risk", "low") == "high"
+        and getattr(capability, "requires_approval", False)
     )
 
     with deps.session_factory() as session:
@@ -553,7 +553,7 @@ def _run_agent_step(
             return StepResult(Observation(capability_id, "agent", "completed"))
 
         decision = evaluate_capability(
-            capability_id, deps.snapshot.roles, has_approval=approval_granted
+            capability_id, deps.snapshot.permissions, has_approval=approval_granted
         )
         if not decision.allowed:
             emit_event(

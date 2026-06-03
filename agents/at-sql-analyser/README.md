@@ -223,7 +223,7 @@ reason yields a `needs_approval` status and an `approval.required` event.
 | Snapshot | `auth/snapshot.py` | `GET {NOVA_API_INTERNAL_URL}/internal/agent-runs/{runId}/entitlement`, recompute `compute_snapshot_hash` (must match TS), check expiry; fail closed (`SnapshotError`) |
 | Wrapper | `auth/policy.py` | `authorize(snapshot, capability_id, has_approval)`: allowlist check then `evaluate_capability` |
 | Layer B gate | `authz/policy_gate.py` | `evaluate_capability` → reasons `unknown_capability`, `missing_permission`, `approval_required`, `allowed` |
-| Registry | `authz/registry.py` + generated `authz/nova_authz.py` | TS-parity catalog; `read_capability_ids()` / `write_capability_ids()` |
+| Registry | `authz/rbac_registry.py` + `authz/registry.py` | Dynamic DB-driven registry (fetch/cache, fail closed); `read_capability_ids()` / `write_capability_ids()` over the active policy |
 | Outbound tokens | `auth/tokens.py` | `ServiceTokenClient` client-credentials, per-scope cache |
 
 **Layer A** filters the planner menu to entitled read/write capabilities
@@ -341,8 +341,8 @@ scrub them.
 | `src/at_sql_analyser/auth/snapshot.py` | Entitlement fetch + hash verify |
 | `src/at_sql_analyser/auth/policy.py` | `authorize()` (allowlist + gate) |
 | `src/at_sql_analyser/authz/policy_gate.py` | `evaluate_capability` reason codes |
-| `src/at_sql_analyser/authz/registry.py` | Catalog helpers, read/write id lists |
-| `src/at_sql_analyser/authz/nova_authz.py` | Generated capability/role catalog |
+| `src/at_sql_analyser/authz/registry.py` | Active-registry helpers, read/write id lists |
+| `src/at_sql_analyser/authz/rbac_registry.py` | Dynamic RBAC registry client + active-policy holder (fail closed) |
 | `src/at_sql_analyser/mcp/data_client.py` | MCP `describe_schema` / `run_select_query` |
 | `src/at_sql_analyser/mcp/catalog_client.py` | Startup `GET /catalog` |
 | `src/at_sql_analyser/tools/capability_client.py` | Node tool-call gateway client |

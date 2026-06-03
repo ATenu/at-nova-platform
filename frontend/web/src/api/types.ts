@@ -47,11 +47,55 @@ export interface UserDto {
 export interface RoleDto {
   readonly name: string;
   readonly description?: string | null;
+  readonly isSystem?: boolean;
 }
 
 export interface PermissionDto {
   readonly name: string;
   readonly description?: string | null;
+  readonly isSystem?: boolean;
+}
+
+/** A capability (agent skill / MCP tool) and its admin-editable policy. */
+export interface CapabilityDto {
+  readonly id: string;
+  readonly kind: string;
+  readonly mode: string;
+  readonly risk: 'low' | 'high';
+  readonly resourceScoped: boolean;
+  readonly delegated: boolean;
+  readonly enabled: boolean;
+  /** Opt-in human-approval gate (default false); decoupled from `risk`. */
+  readonly requiresApproval: boolean;
+  readonly isSystem: boolean;
+  readonly requiredPermissions: readonly string[];
+}
+
+export interface RoutePolicyDto {
+  readonly routeId: string;
+  readonly kind: 'public' | 'authenticated' | 'permission';
+  readonly permissionName: string | null;
+  readonly audit: boolean;
+}
+
+export interface ViewPermissionDto {
+  readonly viewName: string;
+  readonly mode: 'read' | 'write';
+  readonly permissionName: string;
+}
+
+/**
+ * The effective, DB-driven authorization policy served by `GET /rbac/registry`.
+ * The single dynamic source the frontend (and agents) build their views from.
+ */
+export interface RbacRegistryDto {
+  readonly revision: number;
+  readonly roles: readonly RoleDto[];
+  readonly permissions: readonly PermissionDto[];
+  readonly rolePermissions: Record<string, readonly string[]>;
+  readonly capabilities: readonly CapabilityDto[];
+  readonly routePolicies: readonly RoutePolicyDto[];
+  readonly viewPermissions: readonly ViewPermissionDto[];
 }
 
 export type KeycloakSyncStatus = 'synced' | 'partial' | 'not_found' | 'error';

@@ -1,14 +1,8 @@
-import {
-  ForbiddenError,
-  NotFoundError,
-  getCapability,
-  permissionsSatisfyCapability,
-  toKnownRoles,
-  type Permission,
-} from '@nova/shared';
+import { ForbiddenError, NotFoundError } from '@nova/shared';
 import { MessageRole, type AgentRunEntitlement } from '@nova/database';
 import type { Logger } from '@nova/shared';
 import type { AuthContext } from '../../auth/auth-context';
+import { getActiveRegistry } from '../../rbac/registry-holder';
 import type { ConversationRepository } from '../chat/conversation.repository';
 import type { AgentToolLink } from './agent-links';
 import type { AgentRunRepository } from './agent-run.repository';
@@ -91,9 +85,10 @@ export class ToolGatewayService {
   async executeCapability(input: ExecuteCapabilityInput): Promise<ToolCallResult> {
     const { run, entitlement } = await this.loadVerified(input.runId);
 
-    const capability = getCapability(input.capabilityId);
-    const permissionSet = new Set<Permission>(entitlement.permissions as Permission[]);
-    if (!capability || !permissionsSatisfyCapability(capability, permissionSet)) {
+    const registry = getActiveRegistry();
+    const capability = registry.getCapability(input.capabilityId);
+    const permissionSet = new Set<string>(entitlement.permissions);
+    if (!capability || !registry.permissionsSatisfyCapability(capability, permissionSet)) {
       // Independent default-deny check (defense in depth): the worker already
       // gated this, but the resource server must never trust that.
       await this.runs.recordToolAudit({
@@ -206,17 +201,17 @@ export class ToolGatewayService {
 
   /** Reconstruct a minimal AuthContext from the immutable snapshot. */
   private authFromSnapshot(entitlement: AgentRunEntitlement): AuthContext {
-    const roles = toKnownRoles(entitlement.roles);
     return {
       subject: entitlement.ownerSubject,
+      applicationUserId: entitlement.ownerUserId,
       issuer: '',
       audience: [],
       email: undefined,
       username: undefined,
       givenName: undefined,
       familyName: undefined,
-      roles,
-      permissions: new Set<Permission>(entitlement.permissions as Permission[]),
+      roles: getActiveRegistry().knownRoles(entitlement.roles),
+      permissions: new Set<string>(entitlement.permissions),
       scopes: [],
     };
   }
