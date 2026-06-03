@@ -199,6 +199,28 @@ async def test_write_resolution_is_bounded_and_fails_closed() -> None:
     assert result.status == "failed"
 
 
+async def test_write_planner_receives_conversation_history() -> None:
+    # Multi-turn references (e.g. "do the same") can only be resolved on the write
+    # path if the orchestrator-aligned prior-turn context reaches the write planner,
+    # exactly as it already does for the read planner.
+    reasoner = FakeReasoner(
+        writes=[WriteItem(capability_id="issues.create", input={"title": "x"})]
+    )
+    deps = GraphDeps(
+        reasoner=reasoner,
+        limits=LIMITS,
+        capability_client=FakeCapabilityClient(),
+        authorize=_allow_all,
+        on_event=lambda _t, _p: None,
+        conversation_history="user: add a comment 'from crm that all'\nassistant: Done.",
+    )
+    result = await run_task(_task(), deps)
+    assert result.status == "completed"
+    assert reasoner.seen_conversation_history == (
+        "user: add a comment 'from crm that all'\nassistant: Done."
+    )
+
+
 async def test_write_event_traces_stay_pii_free() -> None:
     # The owner's own stream carries the full capability input/output (so every
     # write is trackable end to end), but the SCRUBBED trace that reaches logs /

@@ -164,6 +164,7 @@ class Reasoner(Protocol):
         authorized_reads: Sequence[str],
         authorized_writes: Sequence[str],
         history: Sequence[QueryAttempt],
+        conversation_history: str = "",
     ) -> WriteStep: ...
 
     async def compose_writes(
@@ -273,6 +274,7 @@ class OpenAIReasoner:
         authorized_reads: Sequence[str],
         authorized_writes: Sequence[str],
         history: Sequence[QueryAttempt],
+        conversation_history: str = "",
     ) -> WriteStep:
         step = await self._structured(
             _WriteStepLLM,
@@ -282,6 +284,7 @@ class OpenAIReasoner:
                 authorized_reads=authorized_reads,
                 authorized_writes=authorized_writes,
                 history=history,
+                conversation_history=conversation_history,
             ),
         )
         if step.action == "write":

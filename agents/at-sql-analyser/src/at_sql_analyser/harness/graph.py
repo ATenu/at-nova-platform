@@ -362,6 +362,7 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
             authorized_reads=authorized_reads,
             authorized_writes=authorized_writes,
             history=tuple(state.get("attempts", [])),
+            conversation_history=deps.conversation_history,
         )
         if step.action == "write" and step.writes:
             calls = [

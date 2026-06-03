@@ -98,7 +98,9 @@ class FakeReasoner:
         authorized_reads: Sequence[str],
         authorized_writes: Sequence[str],
         history: Sequence[QueryAttempt],
+        conversation_history: str = "",
     ) -> WriteStep:
+        self.seen_conversation_history = conversation_history
         self.seen_authorized_writes.append(tuple(authorized_writes))
         self.seen_authorized_reads.append(tuple(authorized_reads))
         index = len(history)
