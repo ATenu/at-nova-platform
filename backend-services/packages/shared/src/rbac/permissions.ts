@@ -36,6 +36,13 @@ export const PERMISSIONS = [
   'create-agent-run',
   'read-agent-run',
   'cancel-agent-run',
+  // A2A agent-registry administration (control-plane). These gate the
+  // `/api/v1/admin/agents` surface only: viewing the registry and onboarding /
+  // enabling / disabling / removing admin-source agents. They are NOT agent-run
+  // lifecycle gates and NOT domain capabilities; routing/authorization for what
+  // an agent may do still flows through the snapshot + shared catalog + Layer B.
+  'read-agents',
+  'write-agents',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -99,6 +106,8 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
     'create-agent-run',
     'read-agent-run',
     'cancel-agent-run',
+    'read-agents',
+    'write-agents',
   ],
   'ops-compliance': [
     'read-sop',

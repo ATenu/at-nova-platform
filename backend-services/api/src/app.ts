@@ -50,6 +50,9 @@ import { OrchestratorClient } from './modules/agent-runs/orchestrator-client';
 import { createA2aChatRouter, createAgentRunRouter } from './modules/agent-runs/agent-run.routes';
 import { ToolGatewayService } from './modules/agent-runs/tool-gateway.service';
 import { createToolGatewayRouter } from './modules/agent-runs/tool-gateway.routes';
+import { AdminAgentRepository } from './modules/admin-agents/admin-agent.repository';
+import { AdminAgentService } from './modules/admin-agents/admin-agent.service';
+import { createAdminAgentRouter } from './modules/admin-agents/admin-agent.routes';
 import { ServiceTokenVerifier } from './auth/service-token-verifier';
 import { createServiceAuthenticate } from './auth/service-authenticate';
 import { RbacRegistryService } from './rbac/rbac-registry.service';
@@ -224,6 +227,21 @@ export function createApp(deps: AppDependencies): Express {
     app.use('/api/v1/a2a', createA2aChatRouter({ authenticate, service: agentRunService }));
     app.use('/api/v1/agent-runs', createAgentRunRouter({ authenticate, service: agentRunService }));
     logger.info({ orchestratorDispatch: orchestratorClient !== null }, 'agent-runs surface mounted');
+
+    // Admin agent registry (view + onboard). Reads + metadata mutations run
+    // against the agents DB; onboarding (native A2A card fetch) is delegated to
+    // the orchestrator. Audit rows are written to the business-DB RBAC log.
+    const adminAgentService = new AdminAgentService(
+      new AdminAgentRepository(agentsDataSource),
+      dataSource,
+      orchestratorClient,
+      logger,
+    );
+    app.use(
+      '/api/v1/admin/agents',
+      createAdminAgentRouter({ authenticate, service: adminAgentService }),
+    );
+    logger.info('admin agent registry surface mounted');
 
     // Internal MCP tool gateway (execution plane -> control plane). The worker
     // reaches it with an audience-restricted service token; authorization is

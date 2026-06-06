@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from typing import Any, Literal, Protocol
@@ -64,6 +65,8 @@ from .observability.tracing import build_tracer
 from .registration import AgentRegistrar
 from .skills import AGENT_NAME, SKILL_ACT_WRITE, SKILL_ANALYSE_READ, advertised_skills
 from .tools.capability_client import CapabilityClient, HttpCapabilityClient
+
+logger = logging.getLogger(__name__)
 
 StateStoreFactory = Callable[[str], AgentStateStore | None]
 
@@ -714,6 +717,21 @@ def create_app(
             audience_scope=cfg.mcp_audience_scope,
         )
     )
+    # Load the DB-driven RBAC registry up front so the Agent Card advertises its
+    # skills. ``advertised_skills`` is drift-guarded: it keeps only skills whose
+    # id resolves to a real capability in the active registry, which is empty
+    # until the first refresh — so without this the card ships ``skills: []`` and
+    # the orchestrator rejects self-registration (no routable skills). The API is
+    # a healthcheck dependency, so this normally succeeds; fail-soft (a transient
+    # outage yields an empty card until the next restart) to never block serving.
+    if registry_client is None:
+        try:
+            rc.refresh()
+        except RbacRegistryError:
+            logger.warning(
+                "rbac registry unavailable at startup; agent card may advertise no skills"
+            )
+
     agent_card = build_agent_card(cfg, resolved_catalog)
     a2a_app = A2AStarletteApplication(agent_card=agent_card, http_handler=handler)
     app: Starlette = a2a_app.build()

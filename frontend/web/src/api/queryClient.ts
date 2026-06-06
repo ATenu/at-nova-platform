@@ -7,6 +7,8 @@ export const queryKeys = {
   users: ['admin', 'users'] as const,
   roles: ['admin', 'roles'] as const,
   permissions: ['admin', 'permissions'] as const,
+  agents: ['agents', 'registry'] as const,
+  agent: (name: string) => ['agents', 'registry', name] as const,
   customers: ['customers'] as const,
   products: ['products'] as const,
   sales: ['sales'] as const,

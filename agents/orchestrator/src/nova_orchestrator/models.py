@@ -164,6 +164,24 @@ class A2aAgentRegistration(Base):
     skill_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Admin-onboarding columns (additive; defaults mirror the migration so the
+    # self-registration upsert in ``register_agent`` keeps working unchanged and
+    # leaves ``source='self'``). Admin-source rows are durable (see
+    # ``load_registry_from_store``) and carry the synthetic-heartbeat bookkeeping.
+    source: Mapped[str] = mapped_column(Text, nullable=False, default="self")
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="onboarded")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tags: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    onboarded_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    onboarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_card_fetch_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AgentAuditLog(Base):

@@ -6,6 +6,7 @@
 import type {
   ActionCommentDto,
   AdminUserDto,
+  AgentRegistrationDto,
   ConversationDto,
   CustomerDto,
   CustomerIssueDto,
@@ -47,6 +48,7 @@ export const rbacStore: {
     'read-sales', 'write-sales', 'read-permissions', 'write-permissions', 'read-actions',
     'write-actions', 'read-sop', 'write-sop', 'read-users', 'write-users',
     'create-agent-run', 'read-agent-run', 'cancel-agent-run',
+    'read-agents', 'write-agents',
   ].map((name) => ({ name, description: null, isSystem: true })),
   rolePermissions: {
     'sales-user': [
@@ -62,6 +64,7 @@ export const rbacStore: {
       'read-sales', 'write-sales', 'read-permissions', 'write-permissions', 'read-actions',
       'write-actions', 'read-sop', 'write-sop', 'read-users', 'write-users',
       'create-agent-run', 'read-agent-run', 'cancel-agent-run',
+      'read-agents', 'write-agents',
     ],
     'ops-compliance': ['read-sop', 'write-sop', 'create-agent-run', 'read-agent-run', 'cancel-agent-run'],
     'customer-support': [
@@ -136,6 +139,32 @@ function userRef(id: string): UserDto {
 export function findUserByEmail(email: string): AdminUserDto | undefined {
   return usersStore.find((user) => user.email.toLowerCase() === email.toLowerCase());
 }
+
+/** A2A agent registry: a self-registered analyst plus an admin-onboarded agent. */
+export const agentsStore: Mutable<AgentRegistrationDto>[] = [
+  {
+    name: 'at-sql-analyser',
+    displayName: 'SQL Analyst',
+    description: 'Answers questions over curated read-only views.',
+    baseUrl: 'http://at-sql-analyser:8003',
+    audience: 'nova-agent-sql-analyst',
+    source: 'self',
+    status: 'onboarded',
+    enabled: true,
+    version: '1.0.0',
+    tags: ['data', 'analytics'],
+    skills: [
+      { id: 'data.analyse.read', name: 'Analyse', description: 'Answer questions over curated views.', tags: ['count', 'trend'] },
+      { id: 'data.act.write', name: 'Act', description: 'Perform an approved write action.', tags: [] },
+    ],
+    registeredAt: now,
+    lastSeenAt: now,
+    onboardedBy: null,
+    onboardedAt: null,
+    lastCardFetchAt: null,
+    lastError: null,
+  },
+];
 
 export const customersStore: Mutable<CustomerDto>[] = [
   { id: 'cust-agostino', email: 'agostino.tenuta@mc.com', fullName: 'Agostino Tenuta', firstName: 'Agostino', lastName: 'Tenuta', age: 31, active: true, salesCount: 2, issuesCount: 1, createdAt: now, updatedAt: now },

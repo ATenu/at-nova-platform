@@ -101,6 +101,16 @@ class OrchestratorConfig:
     # closed) - adding a new agent means adding its Keycloak client id here.
     a2a_registry_ttl_s: int
     agent_registration_authorized_parties: tuple[str, ...]
+    # Operator-driven admin onboarding. The onboard endpoint accepts a service
+    # token only from one of these authorized parties (azp pinning, fail closed),
+    # distinct from the agent self-registration allowlist: only the control plane
+    # (default ``nova-api``) may drive admin onboarding.
+    agent_onboard_authorized_parties: tuple[str, ...]
+    # Server-side synthetic heartbeat for admin-onboarded agents: how often the
+    # beat task re-fetches each admin card, and how many consecutive failures
+    # flip a row to ``unreachable`` (it never deletes the row; an admin decides).
+    admin_agent_revalidate_interval_s: int
+    admin_agent_unreachable_threshold: int
     # Optional SSRF guard: when non-empty, a registering agent's base_url host
     # must be in this allowlist (in addition to the http/https scheme check).
     agent_registration_allowed_hosts: tuple[str, ...]
@@ -174,6 +184,9 @@ def load_config() -> OrchestratorConfig:
         agent_registration_authorized_parties=_csv(
             "AGENT_REGISTRATION_AUTHORIZED_PARTIES", "nova-agent-sql-analyst"
         ),
+        agent_onboard_authorized_parties=_csv("AGENT_ONBOARD_AUTHORIZED_PARTIES", "nova-api"),
+        admin_agent_revalidate_interval_s=_int("ADMIN_AGENT_REVALIDATE_INTERVAL_S", 60),
+        admin_agent_unreachable_threshold=_int("ADMIN_AGENT_UNREACHABLE_THRESHOLD", 3),
         agent_registration_allowed_hosts=_csv("AGENT_REGISTRATION_ALLOWED_HOSTS", ""),
         a2a_registry_seed_sql_analyst=_bool("A2A_REGISTRY_SEED_SQL_ANALYST", True),
         # Default 180s = agent total budget (120s) + one in-flight LLM call (30s)

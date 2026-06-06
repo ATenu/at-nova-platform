@@ -20,6 +20,7 @@ import { SopDetailPage } from '@/features/sops/SopDetailPage';
 import { SopEditorPage } from '@/features/sops/SopEditorPage';
 import { AdminUsersPage } from '@/features/admin/AdminUsersPage';
 import { RolesPermissionsPage } from '@/features/admin/RolesPermissionsPage';
+import { AgentRegistryPage } from '@/features/admin/AgentRegistryPage';
 import { NotFoundPage } from '@/features/misc/NotFoundPage';
 
 /**
@@ -77,6 +78,9 @@ export function AppRouter() {
           </Route>
           <Route element={<RequirePermission anyOf={['read-permissions']} />}>
             <Route path="admin/roles" element={<RolesPermissionsPage />} />
+          </Route>
+          <Route element={<RequirePermission anyOf={['read-agents']} />}>
+            <Route path="admin/agents" element={<AgentRegistryPage />} />
           </Route>
 
           <Route path="*" element={<NotFoundPage />} />

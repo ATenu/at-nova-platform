@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from .authz.registry import get_capability
@@ -163,24 +163,47 @@ def load_registry_from_store(
     *,
     now: datetime | None = None,
 ) -> AgentRegistry:
-    """Build the routing table from live self-registrations (native discovery).
+    """Build the routing table from live registrations (native discovery).
 
-    Only registrations refreshed within ``a2a_registry_ttl_s`` are considered
-    live. Skills are intersected with the shared catalog (``_valid_agent_skills``)
-    so a card can never widen what is dispatchable. If nothing live is found and
-    seeding is enabled, fall back to the statically configured SQL analyst.
+    Self-registered rows are TTL-gated on ``last_seen_at`` (heartbeat-driven).
+    Admin-onboarded rows are durable: included while ``enabled`` and
+    ``status='onboarded'`` regardless of the heartbeat TTL, because an operator
+    onboarded agent may not run Nova's self-registration heartbeat (a server-side
+    synthetic heartbeat keeps their liveness honest, never silently routing to a
+    dead endpoint). Skills are intersected with the shared catalog
+    (``_valid_agent_skills``) for *every* row so a card can never widen what is
+    dispatchable. If nothing live is found and seeding is enabled, fall back to
+    the statically configured SQL analyst.
     """
     moment = now or datetime.now(UTC)
     cutoff = moment - timedelta(seconds=config.a2a_registry_ttl_s)
     rows = (
         session.execute(
-            select(A2aAgentRegistration).where(A2aAgentRegistration.last_seen_at >= cutoff)
+            select(A2aAgentRegistration).where(
+                or_(
+                    and_(
+                        A2aAgentRegistration.source == "self",
+                        A2aAgentRegistration.last_seen_at >= cutoff,
+                    ),
+                    and_(
+                        A2aAgentRegistration.source == "admin",
+                        A2aAgentRegistration.enabled.is_(True),
+                        A2aAgentRegistration.status == "onboarded",
+                    ),
+                )
+            )
         )
         .scalars()
         .all()
     )
     descriptors: list[AgentDescriptor] = []
     for row in rows:
+        # Defense in depth alongside the SQL filter (and keeps a fake-session
+        # test honest): never route to a disabled/unhealthy admin row.
+        if getattr(row, "source", "self") == "admin" and (
+            not getattr(row, "enabled", True) or getattr(row, "status", "onboarded") != "onboarded"
+        ):
+            continue
         if not is_allowed_base_url(row.base_url, config.agent_registration_allowed_hosts):
             continue
         descriptor = _descriptor_from_row(row)

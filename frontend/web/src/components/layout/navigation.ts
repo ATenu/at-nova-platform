@@ -47,6 +47,12 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         icon: 'shield',
         anyOf: ['read-permissions'],
       },
+      {
+        to: '/app/admin/agents',
+        label: 'Agent Registry',
+        icon: 'sparkles',
+        anyOf: ['read-agents'],
+      },
     ],
   },
 ];

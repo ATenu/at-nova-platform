@@ -11,12 +11,14 @@ export { seedUuid, NOVA_SEED_NAMESPACE } from './seeds/seed-uuid';
 export * from './agents/agent-enums';
 export {
   AGENT_ENTITIES,
+  A2aAgentRegistration,
   AgentRun,
   AgentRunEntitlement,
   AgentRunEvent,
   WebhookAuthConfig,
   WebhookDelivery,
 } from './agents/entities';
+export type { A2aAgentSource, A2aAgentStatus } from './agents/entities';
 export { AGENT_MIGRATIONS } from './agents/migrations';
 export {
   buildAgentsDataSourceOptions,

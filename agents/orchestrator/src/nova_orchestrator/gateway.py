@@ -8,13 +8,17 @@ only. The body carries no prompt, secret, or user token.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 import jwt
+from a2a.client import A2ACardResolver
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from jwt import PyJWKClient
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .agents import card_skills_from_card, is_allowed_base_url
@@ -23,6 +27,33 @@ from .db import get_session_factory
 from .models import A2aAgentRegistration
 
 _ALLOWED_ALGS = ["RS256", "ES256"]
+# A single GET against the well-known card path; fail fast on an unreachable host.
+_CARD_TIMEOUT_S = 15.0
+
+_logger = logging.getLogger(__name__)
+
+
+class CardFetchError(Exception):
+    """Native A2A card resolution failed (unreachable / non-2xx / unparseable)."""
+
+
+async def resolve_agent_card(
+    host_url: str, *, timeout_s: float = _CARD_TIMEOUT_S
+) -> dict[str, Any]:
+    """Fetch + parse an Agent Card over native A2A (discovery data only).
+
+    Reuses the same ``A2ACardResolver`` mechanism the worker uses outbound, so
+    admin onboarding resolves the card exactly as self-registration's source
+    would publish it. Raises ``CardFetchError`` on any failure; the card is
+    never trusted for authorization (typed parse only).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s) as http:
+            resolver = A2ACardResolver(httpx_client=http, base_url=host_url.rstrip("/"))
+            card = await resolver.get_agent_card()
+    except Exception as exc:  # noqa: BLE001 - upstream A2A/httpx failure space is broad
+        raise CardFetchError(str(exc)) from exc
+    return card.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
 class EnqueueRunRequest(BaseModel):
@@ -41,6 +72,25 @@ class RegisterAgentRequest(BaseModel):
     baseUrl: str = Field(min_length=1)
     audience: str = Field(min_length=1)
     card: dict[str, Any]
+
+
+class OnboardAgentRequest(BaseModel):
+    """Operator-driven onboarding payload (control plane -> orchestrator).
+
+    The card is NOT supplied: it is fetched live over native A2A from
+    ``hostUrl``. The control plane sends only ID/metadata (never a secret).
+    """
+
+    hostUrl: str = Field(min_length=1)
+    audience: str = Field(min_length=1, max_length=255)
+    name: str | None = Field(default=None, max_length=255)
+    displayName: str | None = Field(default=None, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    tags: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    # Actor subject for audit/attribution only (never a secret, never trusted
+    # for authorization).
+    onboardedBy: str | None = Field(default=None, max_length=255)
 
 
 def create_app(config: OrchestratorConfig | None = None) -> FastAPI:
@@ -76,6 +126,18 @@ def create_app(config: OrchestratorConfig | None = None) -> FastAPI:
         azp = claims.get("azp")
         if not isinstance(azp, str) or azp not in cfg.agent_registration_authorized_parties:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "registration not permitted")
+        return claims
+
+    def require_agent_onboarder(
+        claims: dict[str, object] = Depends(require_service_token),
+    ) -> dict[str, object]:
+        # Default deny: admin onboarding is driven only by the control plane.
+        # A distinct azp allowlist (default ``nova-api``) from agent
+        # self-registration: even if the Node route were misconfigured, the
+        # execution plane refuses non-control-plane callers (defense in depth).
+        azp = claims.get("azp")
+        if not isinstance(azp, str) or azp not in cfg.agent_onboard_authorized_parties:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "onboarding not permitted")
         return claims
 
     @app.get("/health")
@@ -142,6 +204,111 @@ def create_app(config: OrchestratorConfig | None = None) -> FastAPI:
             session.execute(statement)
             session.commit()
         return {"name": body.name, "status": "registered"}
+
+    @app.post("/internal/agents/onboard", status_code=status.HTTP_201_CREATED)
+    async def onboard_agent(
+        body: OnboardAgentRequest,
+        _claims: dict[str, object] = Depends(require_agent_onboarder),
+    ) -> dict[str, Any]:
+        # SSRF guard first: the worker later mints tokens for and sends tasks to
+        # this host, so constrain scheme/host (+ optional allowlist) before we
+        # ever make an outbound request to it.
+        if not is_allowed_base_url(body.hostUrl, cfg.agent_registration_allowed_hosts):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid host url")
+
+        # Success-gating: only a successfully retrieved, parseable card proceeds.
+        try:
+            card = await resolve_agent_card(body.hostUrl)
+        except CardFetchError:
+            # Coarse, non-leaky reason only (never the raw upstream body).
+            _logger.warning("agent card fetch failed for onboarding host")
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY, "agent card could not be retrieved"
+            ) from None
+
+        skill_ids = [skill.id for skill in card_skills_from_card(card)]
+        if not skill_ids:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "card advertises no skills")
+
+        raw_name = card.get("name")
+        name = body.name or (raw_name if isinstance(raw_name, str) and raw_name else None)
+        if not name:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "agent name could not be determined")
+
+        raw_version = card.get("version")
+        version = raw_version if isinstance(raw_version, str) and raw_version else None
+        now = datetime.now(UTC)
+
+        with get_session_factory(cfg)() as session:
+            existing = session.execute(
+                select(A2aAgentRegistration).where(A2aAgentRegistration.name == name)
+            ).scalar_one_or_none()
+            # Preserve clear ownership: never let an admin row silently overwrite
+            # a self-registered agent of the same name (and the poller never
+            # touches self rows). Re-onboarding an existing admin row updates it.
+            if existing is not None and existing.source == "self":
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT, "name already registered by a self-registered agent"
+                )
+
+            statement = (
+                pg_insert(A2aAgentRegistration)
+                .values(
+                    name=name,
+                    base_url=body.hostUrl,
+                    audience=body.audience,
+                    card=card,
+                    skill_ids=skill_ids,
+                    registered_at=now,
+                    last_seen_at=now,
+                    source="admin",
+                    status="onboarded",
+                    enabled=body.enabled,
+                    display_name=body.displayName,
+                    description=body.description,
+                    version=version,
+                    tags=list(body.tags),
+                    onboarded_by=body.onboardedBy,
+                    onboarded_at=now,
+                    last_card_fetch_at=now,
+                    consecutive_failures=0,
+                    last_error=None,
+                )
+                .on_conflict_do_update(
+                    index_elements=[A2aAgentRegistration.name],
+                    set_={
+                        "base_url": body.hostUrl,
+                        "audience": body.audience,
+                        "card": card,
+                        "skill_ids": skill_ids,
+                        "last_seen_at": now,
+                        "source": "admin",
+                        "status": "onboarded",
+                        "enabled": body.enabled,
+                        "display_name": body.displayName,
+                        "description": body.description,
+                        "version": version,
+                        "tags": list(body.tags),
+                        "onboarded_by": body.onboardedBy,
+                        "onboarded_at": now,
+                        "last_card_fetch_at": now,
+                        "consecutive_failures": 0,
+                        "last_error": None,
+                    },
+                )
+            )
+            session.execute(statement)
+            session.commit()
+
+        return {
+            "name": name,
+            "baseUrl": body.hostUrl,
+            "audience": body.audience,
+            "skillIds": skill_ids,
+            "version": version,
+            "status": "onboarded",
+            "card": card,
+        }
 
     @app.delete("/internal/agents/{name}", status_code=status.HTTP_200_OK)
     def deregister_agent(

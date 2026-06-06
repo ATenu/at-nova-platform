@@ -4,6 +4,7 @@ import { McpReadDataSurface1717600000000 } from './1717600000000-McpReadDataSurf
 import { McpReadStatusAsText1717700000000 } from './1717700000000-McpReadStatusAsText';
 import { DynamicRbac1717800000000 } from './1717800000000-DynamicRbac';
 import { CapabilityRequiresApproval1717900000000 } from './1717900000000-CapabilityRequiresApproval';
+import { AgentRegistryPermissions1718000000000 } from './1718000000000-AgentRegistryPermissions';
 
 /** Ordered list of migrations registered with the DataSource. */
 export const MIGRATIONS = [
@@ -13,4 +14,5 @@ export const MIGRATIONS = [
   McpReadStatusAsText1717700000000,
   DynamicRbac1717800000000,
   CapabilityRequiresApproval1717900000000,
+  AgentRegistryPermissions1718000000000,
 ] as const;

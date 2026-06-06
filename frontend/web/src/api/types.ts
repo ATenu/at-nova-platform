@@ -98,6 +98,47 @@ export interface RbacRegistryDto {
   readonly viewPermissions: readonly ViewPermissionDto[];
 }
 
+/** A2A agent registry (admin surface). The card is discovery data only. */
+export type AgentSource = 'self' | 'admin';
+export type AgentStatus = 'onboarded' | 'unreachable' | 'disabled' | 'failed';
+
+export interface AgentSkillDto {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly tags: readonly string[];
+}
+
+export interface AgentRegistrationDto {
+  readonly name: string;
+  readonly displayName: string | null;
+  readonly description: string | null;
+  readonly baseUrl: string;
+  readonly audience: string;
+  readonly source: AgentSource;
+  readonly status: AgentStatus;
+  readonly enabled: boolean;
+  readonly version: string | null;
+  readonly tags: readonly string[];
+  readonly skills: readonly AgentSkillDto[];
+  readonly registeredAt: string;
+  readonly lastSeenAt: string;
+  readonly onboardedBy: string | null;
+  readonly onboardedAt: string | null;
+  readonly lastCardFetchAt: string | null;
+  readonly lastError: string | null;
+}
+
+export interface OnboardAgentRequest {
+  readonly hostUrl: string;
+  readonly audience: string;
+  readonly name?: string;
+  readonly displayName?: string;
+  readonly description?: string;
+  readonly tags?: readonly string[];
+  readonly enabled?: boolean;
+}
+
 export type KeycloakSyncStatus = 'synced' | 'partial' | 'not_found' | 'error';
 
 export interface AdminUserDto {

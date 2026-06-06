@@ -13,8 +13,10 @@ import type {
   SaleDto,
   SopDto,
 } from '@/api/types';
+import type { AgentRegistrationDto } from '@/api/types';
 import {
   actionsStore,
+  agentsStore,
   conversationsStore,
   customersStore,
   findUserByEmail,
@@ -264,6 +266,118 @@ export const handlers = [
       }
     }
     return writeResult();
+  }),
+
+  // ---- Admin: agent registry (view + onboard) ----
+  http.get(`${API}/admin/agents`, ({ request }) => {
+    if (!emailFromRequest(request)) return unauthorized();
+    return HttpResponse.json([...agentsStore]);
+  }),
+  http.get(`${API}/admin/agents/:name`, ({ params, request }) => {
+    if (!emailFromRequest(request)) return unauthorized();
+    const agent = agentsStore.find((a) => a.name === String(params.name));
+    return agent ? HttpResponse.json(agent) : notFound('Agent not found.');
+  }),
+  http.post(`${API}/admin/agents/onboard`, async ({ request }) => {
+    if (!emailFromRequest(request)) return unauthorized();
+    const body = (await request.json()) as {
+      hostUrl: string;
+      audience: string;
+      name?: string;
+      displayName?: string;
+      description?: string;
+      tags?: string[];
+      enabled?: boolean;
+    };
+    // Mock native A2A card fetch: an `unreachable` host fails the success gate.
+    let host: string;
+    try {
+      host = new URL(body.hostUrl).hostname;
+    } catch {
+      return HttpResponse.json(
+        { code: 'validation_failed', title: 'The host URL is invalid.', status: 400 },
+        { status: 400 },
+      );
+    }
+    if (host.includes('unreachable')) {
+      return HttpResponse.json(
+        {
+          code: 'validation_failed',
+          title: 'The agent card could not be retrieved from the host URL.',
+          status: 400,
+        },
+        { status: 400 },
+      );
+    }
+    const name = body.name ?? `agent-${host.split('.')[0]}`;
+    const existing = agentsStore.find((a) => a.name === name);
+    if (existing && existing.source === 'self') {
+      return HttpResponse.json(
+        {
+          code: 'conflict',
+          title: 'An agent with this name is already self-registered.',
+          status: 409,
+        },
+        { status: 409 },
+      );
+    }
+    const agent: AgentRegistrationDto = {
+      name,
+      displayName: body.displayName ?? name,
+      description: body.description ?? null,
+      baseUrl: body.hostUrl,
+      audience: body.audience,
+      source: 'admin',
+      status: 'onboarded',
+      enabled: body.enabled ?? true,
+      version: '1.0.0',
+      tags: body.tags ?? [],
+      skills: [
+        { id: 'data.analyse.read', name: 'Analyse', description: 'Answer questions over curated views.', tags: [] },
+      ],
+      registeredAt: ts(),
+      lastSeenAt: ts(),
+      onboardedBy: emailFromRequest(request),
+      onboardedAt: ts(),
+      lastCardFetchAt: ts(),
+      lastError: null,
+    };
+    if (existing) {
+      Object.assign(existing, agent);
+      return HttpResponse.json(existing, { status: 201 });
+    }
+    agentsStore.unshift(agent);
+    return HttpResponse.json(agent, { status: 201 });
+  }),
+  http.patch(`${API}/admin/agents/:name`, async ({ params, request }) => {
+    if (!emailFromRequest(request)) return unauthorized();
+    const agent = agentsStore.find((a) => a.name === String(params.name));
+    if (!agent) return notFound('Agent not found.');
+    if (agent.source === 'self') {
+      return HttpResponse.json(
+        { code: 'conflict', title: 'Self-registered agents cannot be managed here.', status: 409 },
+        { status: 409 },
+      );
+    }
+    const { enabled } = (await request.json()) as { enabled: boolean };
+    agent.enabled = enabled;
+    agent.status = enabled ? 'onboarded' : 'disabled';
+    return HttpResponse.json(agent);
+  }),
+  http.delete(`${API}/admin/agents/:name`, ({ params, request }) => {
+    if (!emailFromRequest(request)) return unauthorized();
+    const name = String(params.name);
+    const agent = agentsStore.find((a) => a.name === name);
+    if (!agent) return notFound('Agent not found.');
+    if (agent.source === 'self') {
+      return HttpResponse.json(
+        { code: 'conflict', title: 'Self-registered agents cannot be managed here.', status: 409 },
+        { status: 409 },
+      );
+    }
+    const index = agentsStore.indexOf(agent);
+    agentsStore.splice(index, 1);
+    return new HttpResponse(null, { status: 204 });
   }),
 
   // ---- Customers ----

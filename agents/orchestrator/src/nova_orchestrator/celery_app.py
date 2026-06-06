@@ -36,11 +36,16 @@ app.conf.update(
     },
     worker_cancel_long_running_tasks_on_connection_loss=True,
     broker_connection_retry_on_startup=True,
-    # The webhook dispatcher polls the outbox on a fixed cadence (Celery beat).
+    # The webhook dispatcher polls the outbox on a fixed cadence (Celery beat);
+    # the admin-agent synthetic heartbeat re-validates onboarded agents.
     beat_schedule={
         "dispatch-due-webhooks": {
             "task": "webhook.dispatch",
             "schedule": 10.0,
+        },
+        "revalidate-admin-agents": {
+            "task": "agents.revalidate_admin",
+            "schedule": float(_config.admin_agent_revalidate_interval_s),
         },
     },
     # rediss:// outside local enables TLS automatically; broker_use_ssl is set by
@@ -53,4 +58,7 @@ app.autodiscover_tasks(
 )
 app.autodiscover_tasks(
     ["nova_orchestrator"], related_name="webhook_tasks"
+)
+app.autodiscover_tasks(
+    ["nova_orchestrator"], related_name="admin_agent_tasks"
 )

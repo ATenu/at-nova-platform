@@ -14,6 +14,7 @@ describe('Sidebar role visibility', () => {
 
     expect(await screen.findByRole('link', { name: /Users/ })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Roles & Permissions/ })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Agent Registry/ })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Customers/ })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Sales/ })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /SOPs/ })).toBeInTheDocument();
@@ -28,6 +29,7 @@ describe('Sidebar role visibility', () => {
     expect(screen.getByRole('link', { name: /Products/ })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /Users/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /Roles & Permissions/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Agent Registry/ })).not.toBeInTheDocument();
   });
 
   it('shows only SOPs (plus Dashboard/Chat) for compliance@test.com', async () => {

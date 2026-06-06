@@ -11,19 +11,20 @@ describe('RBAC definitions', () => {
   it('exposes the expected counts', () => {
     expect(ROLES).toHaveLength(5);
     // `read-data` was removed: data access is now governed per-view by domain
-    // permissions (see `data-views.ts`), not a coarse SQL gate.
-    expect(PERMISSIONS).toHaveLength(18);
+    // permissions (see `data-views.ts`), not a coarse SQL gate. `read-agents` /
+    // `write-agents` (A2A agent-registry administration) were added (admin-only).
+    expect(PERMISSIONS).toHaveLength(20);
   });
 
-  it('maps roles to permissions with the documented totals (54 grants)', () => {
+  it('maps roles to permissions with the documented totals (56 grants)', () => {
     const totalGrants = Object.values(ROLE_PERMISSIONS).reduce(
       (sum, perms) => sum + perms.length,
       0,
     );
-    // 57 prior grants minus `read-data` (previously granted to admin,
-    // support-operations-user, and ops-compliance) = 54.
-    expect(totalGrants).toBe(54);
-    expect(ROLE_PERMISSIONS['admin']).toHaveLength(18);
+    // 54 prior grants plus the two admin-only agent-registry permissions
+    // (`read-agents`, `write-agents`) = 56.
+    expect(totalGrants).toBe(56);
+    expect(ROLE_PERMISSIONS['admin']).toHaveLength(20);
     expect(ROLE_PERMISSIONS['support-operations-user']).toHaveLength(11);
     expect(ROLE_PERMISSIONS['sales-user']).toHaveLength(10);
     expect(ROLE_PERMISSIONS['customer-support']).toHaveLength(10);
