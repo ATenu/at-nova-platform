@@ -245,6 +245,15 @@ export const CAPABILITY_CATALOG: readonly CapabilityDescriptor[] = [
   // RBAC-gated, low risk like the existing writes: a write runs only if the
   // acting user's entitlement snapshot grants the required permission.
   {
+    id: 'actions.create',
+    kind: 'agent-skill',
+    mode: 'write',
+    requiredPermissions: ['create-actions'],
+    risk: 'low',
+    resourceScoped: false,
+    delegated: true,
+  },
+  {
     id: 'actions.addComment',
     kind: 'agent-skill',
     mode: 'write',

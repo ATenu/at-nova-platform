@@ -60,9 +60,8 @@ describe('ServiceTokenClient', () => {
   });
 
   it('does not forward scope unless requestAudienceScopes is true', async () => {
-    const fetchSpy = jest
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(jsonResponse({ access_token: 'tok-1', expires_in: 300 }));
+    const fetchSpy = jest.spyOn(globalThis, 'fetch');
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ access_token: 'tok-1', expires_in: 300 }));
     const client = new ServiceTokenClient({
       ...baseConfig,
       scope: 'nova-mcp-data',
@@ -74,14 +73,14 @@ describe('ServiceTokenClient', () => {
     const body = (init as RequestInit).body as URLSearchParams;
     expect(body.get('scope')).toBeNull();
 
-    fetchSpy.mockClear();
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ access_token: 'tok-2', expires_in: 300 }));
     const scoped = new ServiceTokenClient({
       ...baseConfig,
       scope: 'nova-mcp-data',
       requestAudienceScopes: true,
     });
     await scoped.getToken();
-    const [, init2] = fetchSpy.mock.calls[0]!;
+    const [, init2] = fetchSpy.mock.calls[1]!;
     const body2 = (init2 as RequestInit).body as URLSearchParams;
     expect(body2.get('scope')).toBe('nova-mcp-data');
   });

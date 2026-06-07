@@ -14,6 +14,7 @@ import { DataTable, type Column } from '@/components/ui/Table';
 import { Modal } from '@/components/ui/Modal';
 import { EmptyState, ErrorState, TableSkeleton } from '@/components/ui/states';
 import { useToast } from '@/components/ui/toast';
+import { resolveAgentCardUrl } from '@/lib/agentCard';
 import { toUserMessage } from '@/lib/errors';
 import { OnboardAgentModal } from './OnboardAgentModal';
 
@@ -235,6 +236,9 @@ function AgentDetailModal({
   if (!agent) {
     return null;
   }
+
+  const agentCardUrl = resolveAgentCardUrl(agent.baseUrl);
+
   return (
     <Modal open={Boolean(agent)} onClose={onClose} title={agent.displayName ?? agent.name} size="lg">
       <div className="stack" style={{ gap: 14 }}>
@@ -246,6 +250,19 @@ function AgentDetailModal({
           {agent.version && <Badge tone="neutral">v{agent.version}</Badge>}
         </div>
         {agent.description && <p className="text-sm" style={{ margin: 0 }}>{agent.description}</p>}
+        <div className="row wrap" style={{ gap: 8, alignItems: 'center' }}>
+          <a
+            href={agentCardUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn btn-secondary btn-sm"
+          >
+            <Icon name="link" size={14} /> Open agent card
+          </a>
+          <span className="subtle text-sm" style={{ wordBreak: 'break-all' }}>
+            {agentCardUrl}
+          </span>
+        </div>
         <dl className="stack" style={{ gap: 6, margin: 0 }}>
           <DetailRow label="Base URL" value={agent.baseUrl} />
           <DetailRow label="Audience" value={agent.audience} />

@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any, Literal, Protocol
 
@@ -460,15 +460,13 @@ class SqlAnalystExecutor(AgentExecutor):
             per_action = authorize(snapshot, capability_id)
             return per_action.allowed, per_action.reason
 
-        sql_enabled = authorize(snapshot, SKILL_QUERY_SELECT).allowed
-        data_client = self._make_data_client(task.run_id) if sql_enabled else None
+        data_client = self._make_data_client(task.run_id)
         deps = GraphDeps(
             reasoner=self._reasoner,
             limits=self._limits,
             data_client=data_client,
             capability_client=self._capabilities,
             authorize=authorizer,
-            sql_enabled=sql_enabled,
             on_event=on_event,
             conversation_history=_history_text(store, task.conversation_id),
             langfuse_callbacks=callbacks,
@@ -608,7 +606,7 @@ def _attach_registrar_lifespan(app: Starlette, registrar: AgentRegistrar) -> Non
     existing = app.router.lifespan_context
 
     @asynccontextmanager
-    async def lifespan(app_instance: Starlette):
+    async def lifespan(app_instance: Starlette) -> AsyncIterator[Mapping[str, Any] | None]:
         await registrar.start()
         try:
             async with existing(app_instance) as state:
@@ -616,7 +614,7 @@ def _attach_registrar_lifespan(app: Starlette, registrar: AgentRegistrar) -> Non
         finally:
             await registrar.stop()
 
-    app.router.lifespan_context = lifespan
+    app.router.lifespan_context = lifespan  # type: ignore[assignment]
 
 
 def create_app(

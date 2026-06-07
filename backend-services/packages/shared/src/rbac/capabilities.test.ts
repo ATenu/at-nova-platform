@@ -142,6 +142,14 @@ describe('capability catalog', () => {
     expect(rolesGrantCapability(['ops-compliance'], 'actions.get')).toBe(false);
   });
 
+  it('gates actions.create on create-actions (mirrors issues.create)', () => {
+    expect(rolesGrantCapability(['admin'], 'actions.create')).toBe(true);
+    expect(rolesGrantCapability(['customer-support'], 'actions.create')).toBe(true);
+    expect(rolesGrantCapability(['support-operations-user'], 'actions.create')).toBe(false);
+    expect(rolesGrantCapability(['sales-user'], 'actions.create')).toBe(false);
+    expect(rolesGrantCapability(['ops-compliance'], 'actions.create')).toBe(false);
+  });
+
   it('gates the new write capabilities on their mirrored write permission', () => {
     // write-actions: support-operations-user + customer-support + admin, NOT sales-user.
     for (const id of ['actions.addComment', 'actions.update']) {
@@ -175,6 +183,7 @@ describe('capability catalog', () => {
       'issues.get',
       'actions.list',
       'actions.get',
+      'actions.create',
       'actions.addComment',
       'actions.update',
       'issues.update',

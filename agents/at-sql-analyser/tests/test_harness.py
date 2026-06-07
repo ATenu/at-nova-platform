@@ -58,7 +58,9 @@ async def test_finish_without_query() -> None:
     assert result.status == "completed"
     assert result.answer == "nothing to do"
     assert result.query_count == 0
-    assert data.calls == []
+    # load_schema may call describe_schema when that tool is discovered; no
+    # planner-driven MCP tool dispatch (e.g. run_select_query) should occur.
+    assert all(name != "run_select_query" for name, _ in data.calls)
 
 
 async def test_query_events_carry_tool_input_output_for_the_owner_stream() -> None:
@@ -78,18 +80,18 @@ async def test_query_events_carry_tool_input_output_for_the_owner_stream() -> No
     )
     await run_task(_task(), deps)
     by_type = {t: p for t, p in seen}
-    assert "agent.query.started" in by_type and "agent.completed" in by_type
+    assert "agent.mcp.started" in by_type and "agent.completed" in by_type
 
-    started = by_type["agent.query.started"]
+    started = by_type["agent.mcp.started"]
     assert started["tool"] == "run_select_query"
     assert started["input"] == {"sql": "SELECT 1 FROM mcp_read.sales", "params": []}
 
-    completed = by_type["agent.query.completed"]
+    completed = by_type["agent.mcp.completed"]
     assert completed["tool"] == "run_select_query"
+    assert completed["truncated"] is False
     assert completed["output"] == {
         "rows": [{"amount": 10}],
         "rowCount": 1,
-        "truncated": False,
     }
 
     # The Langfuse view of every event drops SQL and rows (nested -> "<dict>").
@@ -110,9 +112,9 @@ async def test_timeout_guard_terminates_loop() -> None:
             *,
             goal: str,
             schema: Sequence[SchemaView],
+            mcp_tools: Sequence[object],
             authorized_reads: Sequence[str],
             history: Sequence[QueryAttempt],
-            sql_enabled: bool,
             conversation_history: str = "",
         ) -> ReadStep:
             clock.advance(20.0)
@@ -163,7 +165,6 @@ async def test_read_chains_resolver_then_scoped_read() -> None:
         limits=LIMITS,
         capability_client=cap,
         authorize=_allow_all,
-        sql_enabled=False,
     )
     result = await run_task(_task(), deps)
     assert result.status == "completed"
@@ -171,8 +172,8 @@ async def test_read_chains_resolver_then_scoped_read() -> None:
     assert [c[0] for c in cap.calls] == ["customers.search", "sales.report.customer"]
     # Read idempotency keys use the agent-read: prefix.
     assert all(key.startswith("agent-read:") for _, key in cap.calls)
-    # Only the entitled structured reads were offered (SQL disabled).
-    assert reasoner.seen_sql_enabled == [False, False]
+    # MCP tools were discovered but the planner used structured reads only.
+    assert reasoner.seen_mcp_tools
 
 
 async def test_read_dispatch_re_gates_layer_b_before_calling_gateway() -> None:
@@ -210,7 +211,6 @@ async def test_planner_does_not_offer_unentitled_read() -> None:
         limits=LIMITS,
         capability_client=cap,
         authorize=lambda c: (c == "sales.get", "allowed"),
-        sql_enabled=False,
     )
     result = await run_task(_task(), deps)
     assert cap.calls == []  # not entitled -> never dispatched
@@ -230,7 +230,6 @@ async def test_read_planner_only_sees_entitled_reads() -> None:
         limits=LIMITS,
         capability_client=cap,
         authorize=only_sales_get,
-        sql_enabled=False,
     )
     await run_task(_task(), deps)
     assert reasoner.seen_authorized_reads

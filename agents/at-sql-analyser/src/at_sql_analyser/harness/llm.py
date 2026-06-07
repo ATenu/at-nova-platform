@@ -21,6 +21,7 @@ from typing import Any, Literal, Protocol, TypeVar
 from pydantic import BaseModel, Field, SecretStr
 
 from .. import prompts
+from ..mcp.data_client import McpTool
 from .state import QueryAttempt, SchemaView, WriteOutcome
 
 logger = logging.getLogger("at_sql_analyser.harness.llm")
@@ -31,22 +32,20 @@ class ReadStep(BaseModel):
 
     The agent owns ALL concrete read selection: each turn it picks ONE of two
     tool families (or finishes):
-      - ``"sql"``: run one free-form read-only SELECT (``sql``/``params``) over
-        the curated ``mcp_read`` views (only offered when SQL is available, i.e.
-        the caller holds ``data.query.select``; the views shown are limited to
-        those the caller's domain permissions entitle them to read);
+      - ``"mcp_tool"``: invoke ONE tool from the live MCP ``tools/list`` menu
+        (``tool_name`` + ``tool_input`` built from the server-published schema);
       - ``"capability"``: invoke ONE entitled structured read capability
         (``capability_id`` from the authorized closed set, with ``input`` built
         from the goal/observations — e.g. resolve a name via ``customers.search``
         then read with the returned id);
       - ``"finish"``: enough has been gathered (or nothing applies).
     Selecting an action is a request, not authorization: Layer B re-gates every
-    concrete capability and the DB MCP server re-validates every SELECT.
+    concrete capability and the DB MCP server re-validates every tool call.
     """
 
-    action: Literal["sql", "capability", "finish"]
-    sql: str = ""
-    params: list[str] = Field(default_factory=list)
+    action: Literal["mcp_tool", "capability", "finish"]
+    tool_name: str = ""
+    tool_input: dict[str, Any] = Field(default_factory=dict)
     capability_id: str = ""
     input: dict[str, Any] = Field(default_factory=dict)
     rationale: str = ""
@@ -145,9 +144,9 @@ class Reasoner(Protocol):
         *,
         goal: str,
         schema: Sequence[SchemaView],
+        mcp_tools: Sequence[McpTool],
         authorized_reads: Sequence[str],
         history: Sequence[QueryAttempt],
-        sql_enabled: bool,
         conversation_history: str = "",
     ) -> ReadStep: ...
 
@@ -235,9 +234,9 @@ class OpenAIReasoner:
         *,
         goal: str,
         schema: Sequence[SchemaView],
+        mcp_tools: Sequence[McpTool],
         authorized_reads: Sequence[str],
         history: Sequence[QueryAttempt],
-        sql_enabled: bool,
         conversation_history: str = "",
     ) -> ReadStep:
         return await self._structured(
@@ -246,9 +245,9 @@ class OpenAIReasoner:
             prompts.plan_read_user(
                 goal=goal,
                 schema=schema,
+                mcp_tools=mcp_tools,
                 authorized_reads=authorized_reads,
                 history=history,
-                sql_enabled=sql_enabled,
                 conversation_history=conversation_history,
             ),
         )

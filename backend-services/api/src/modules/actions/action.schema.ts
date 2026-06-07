@@ -38,3 +38,13 @@ export const addCommentBodySchema = z.object({
 });
 
 export type AddCommentBody = z.infer<typeof addCommentBodySchema>;
+
+export const createActionBodySchema = z.object({
+  issueId: z.string().uuid(),
+  title: z.string().trim().min(1).max(255),
+  description: z.string().trim().min(1).max(5000),
+  assignedOwnerId: z.string().uuid().optional(),
+  status: actionStatusSchema.optional(),
+});
+
+export type CreateActionBody = z.infer<typeof createActionBodySchema>;

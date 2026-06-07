@@ -59,6 +59,7 @@ export interface TraceSummary {
 const AGENT_INTERNAL_PREFIXES = [
   'agent.schema.',
   'agent.query.',
+  'agent.mcp.',
   'agent.read.',
   'agent.write.',
   // Full/detailed view only (delivered when `detail=full`): graph-node
@@ -136,6 +137,48 @@ function errorPatch(value: string | undefined): { error?: string } {
   return value === undefined ? {} : { error: value };
 }
 
+function queryStartedLine(tool: string): string {
+  return tool ? `Running ${tool}…` : 'Querying data…';
+}
+
+function queryCompletedLine(
+  tool: string,
+  rowCount: number | null,
+  payload: Record<string, unknown>,
+): Omit<TraceItem, 'id'> {
+  if (payload.error === true) {
+    const reason = payloadString(payload, 'reason');
+    return {
+      line: tool
+        ? reason
+          ? `${tool}: query failed — ${reason}`
+          : `${tool}: query failed.`
+        : reason
+          ? `Query failed: ${reason}`
+          : 'Query failed.',
+      kind: 'agent',
+      ...(reason ? { output: reason } : {}),
+    };
+  }
+  const line = tool
+    ? rowCount !== null
+      ? `${tool}: read ${rowCount} row(s).`
+      : `${tool}: query complete.`
+    : rowCount !== null
+      ? `Read ${rowCount} row(s).`
+      : 'Query complete.';
+  return { line, kind: 'agent', output: payload.output };
+}
+
+function readCompletedLine(capability: string, rowCount: number | null): string {
+  if (capability) {
+    return rowCount !== null
+      ? `${capability}: found ${rowCount} record(s).`
+      : `${capability}: lookup complete.`;
+  }
+  return rowCount !== null ? `Found ${rowCount} record(s).` : 'Lookup complete.';
+}
+
 /** Map a `user`-visibility run event to a renderable item (or skip it). */
 export function describeEvent(event: AgentRunEventDto): Omit<TraceItem, 'id'> | null {
   const payload = event.payload;
@@ -190,30 +233,28 @@ export function describeEvent(event: AgentRunEventDto): Omit<TraceItem, 'id'> | 
     case 'agent.schema.loaded':
       return { line: 'Inspecting available data…', kind: 'agent' };
     case 'agent.query.started':
+    case 'agent.mcp.started':
       return {
-        line: tool ? `Running ${tool}…` : 'Querying data…',
+        line: queryStartedLine(tool),
         kind: 'agent',
         input: payload.input,
       };
-    case 'agent.query.completed': {
-      // A query reports `completed` even on error; surface the failure + reason
-      // rather than a misleading "Read 0 row(s)".
-      if (payload.error === true) {
-        const reason = payloadString(payload, 'reason');
-        return {
-          line: reason ? `Query failed: ${reason}` : 'Query failed.',
-          kind: 'agent',
-          ...(reason ? { output: reason } : {}),
-        };
-      }
-      return {
-        line: rowCount !== null ? `Read ${rowCount} row(s).` : 'Query complete.',
-        kind: 'agent',
-        output: payload.output,
-      };
-    }
+    case 'agent.query.completed':
+    case 'agent.mcp.completed':
+      return queryCompletedLine(tool, rowCount, payload);
     case 'agent.query.rejected':
-      return { line: 'A query was rejected before running.', kind: 'agent' };
+    case 'agent.mcp.rejected':
+      return {
+        line: tool ? `${tool}: query rejected before running.` : 'A query was rejected before running.',
+        kind: 'agent',
+      };
+    case 'agent.mcp.failed':
+      return {
+        line: tool
+          ? `${tool}: query did not complete.`
+          : 'A query did not complete.',
+        kind: 'agent',
+      };
     case 'agent.read.started':
       return {
         line: capability ? `Looking up ${capability}…` : 'Looking up data…',
@@ -222,7 +263,7 @@ export function describeEvent(event: AgentRunEventDto): Omit<TraceItem, 'id'> | 
       };
     case 'agent.read.completed':
       return {
-        line: rowCount !== null ? `Found ${rowCount} record(s).` : 'Lookup complete.',
+        line: readCompletedLine(capability, rowCount),
         kind: 'agent',
         output: payload.output,
       };

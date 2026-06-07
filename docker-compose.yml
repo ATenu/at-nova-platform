@@ -310,8 +310,10 @@ services:
   # data questions by reading ONLY through the DB MCP server. Validates the
   # inbound worker token (aud: nova-agent-sql-analyst, azp: nova-celery-worker),
   # fetches + re-verifies the run's entitlement snapshot from the API, and runs a
-  # bounded, guarded harness. Never connects to any database directly. Not
-  # published to the host (reachable only on the internal network by the worker).
+  # bounded, guarded harness. Never connects to any database directly. Port 8003
+  # is published for local dev so operators can inspect the public Agent Card at
+  # `/.well-known/agent-card.json` from the host browser (A2A tasking stays
+  # internal-only via the worker; ``AGENT_PUBLIC_URL`` keeps the Docker DNS name).
   at-sql-analyser:
     build:
       context: ./agents/at-sql-analyser
@@ -385,6 +387,8 @@ services:
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-nova-chat-dev}
       LANGFUSE_TRACING_ENABLED: ${LANGFUSE_TRACING_ENABLED:-true}
       LANGFUSE_ENVIRONMENT: ${LANGFUSE_ENVIRONMENT:-development}
+    ports:
+      - '8003:8003'
     healthcheck:
       test:
         - 'CMD-SHELL'

@@ -4,6 +4,7 @@ import { CapabilityExecutor, type CapabilityServices } from './capability-execut
 
 const ACTION_ID = '11111111-1111-1111-1111-111111111111';
 const CUSTOMER_ID = '22222222-2222-2222-2222-222222222222';
+const ISSUE_ID = '33333333-3333-3333-3333-333333333333';
 
 function auth(): AuthContext {
   return {
@@ -21,7 +22,7 @@ interface MockServices {
   readonly products: { listProducts: jest.Mock; getProductById: jest.Mock };
   readonly sales: { listSales: jest.Mock; getSaleById: jest.Mock; productsForCustomer: jest.Mock };
   readonly issues: { listIssues: jest.Mock; getIssueById: jest.Mock; updateIssue: jest.Mock };
-  readonly actions: { addComment: jest.Mock; updateAction: jest.Mock };
+  readonly actions: { addComment: jest.Mock; updateAction: jest.Mock; createAction: jest.Mock };
   readonly sops: Record<string, jest.Mock>;
 }
 
@@ -56,6 +57,13 @@ function executor(): { executor: CapabilityExecutor; services: MockServices } {
     actions: {
       addComment: jest.fn(async () => ({ id: 'cm-1', comment: 'looks good' })),
       updateAction: jest.fn(async () => ({ id: ACTION_ID, title: 'Investigate', status: 'in_progress' })),
+      createAction: jest.fn(async () => ({
+        id: ACTION_ID,
+        issueId: ISSUE_ID,
+        title: 'Verify refund policy',
+        description: 'Check SOP and confirm eligibility.',
+        status: 'pending',
+      })),
     },
     sops: {
       listSops: jest.fn(async () => ({
@@ -113,6 +121,30 @@ describe('CapabilityExecutor resolvers', () => {
 });
 
 describe('CapabilityExecutor writes', () => {
+  it('actions.create delegates to the service and returns the new action', async () => {
+    const { executor: exec, services } = executor();
+    const result = await exec.execute(
+      'actions.create',
+      {
+        issueId: ISSUE_ID,
+        title: 'Verify refund policy',
+        description: 'Check SOP and confirm eligibility.',
+      },
+      auth(),
+    );
+    expect(services.actions.createAction).toHaveBeenCalledWith(
+      {
+        issueId: ISSUE_ID,
+        title: 'Verify refund policy',
+        description: 'Check SOP and confirm eligibility.',
+      },
+      expect.anything(),
+    );
+    expect(result.capabilityId).toBe('actions.create');
+    expect(result.summary).toContain('Verify refund policy');
+    expect(JSON.stringify(result.data)).toContain(ACTION_ID);
+  });
+
   it('actions.addComment delegates to the service with a server-side datetime', async () => {
     const { executor: exec, services } = executor();
     await exec.execute('actions.addComment', { actionId: ACTION_ID, comment: 'looks good' }, auth());

@@ -21,6 +21,7 @@ from at_sql_analyser.harness.llm import (
     WriteStep,
 )
 from at_sql_analyser.harness.state import QueryAttempt, SchemaView, WriteOutcome
+from at_sql_analyser.mcp.data_client import McpTool
 from at_sql_analyser.tools.capability_client import CapabilityClientError, CapabilityResult
 
 
@@ -60,7 +61,7 @@ class FakeReasoner:
         self._resolve_reads = list(resolve_reads)
         self.seen_authorized_writes: list[tuple[str, ...]] = []
         self.seen_authorized_reads: list[tuple[str, ...]] = []
-        self.seen_sql_enabled: list[bool] = []
+        self.seen_mcp_tools: list[tuple[str, ...]] = []
         self.seen_conversation_history: str = ""
 
     async def plan_read_step(
@@ -68,14 +69,14 @@ class FakeReasoner:
         *,
         goal: str,
         schema: Sequence[SchemaView],
+        mcp_tools: Sequence[McpTool],
         authorized_reads: Sequence[str],
         history: Sequence[QueryAttempt],
-        sql_enabled: bool,
         conversation_history: str = "",
     ) -> ReadStep:
         self.seen_conversation_history = conversation_history
         self.seen_authorized_reads.append(tuple(authorized_reads))
-        self.seen_sql_enabled.append(sql_enabled)
+        self.seen_mcp_tools.append(tuple(tool.name for tool in mcp_tools))
         index = len(history)
         if index < len(self._queries):
             return self._queries[index]
@@ -125,8 +126,17 @@ class FakeReasoner:
         return ""
 
 
+def read_mcp_tool(tool_name: str, **tool_input: Any) -> ReadStep:
+    return ReadStep(
+        action="mcp_tool",
+        tool_name=tool_name,
+        tool_input=dict(tool_input),
+        rationale="test",
+    )
+
+
 def read_query(sql: str) -> ReadStep:
-    return ReadStep(action="sql", sql=sql, params=[], rationale="test")
+    return read_mcp_tool("run_select_query", sql=sql, params=[])
 
 
 def read_capability(capability_id: str, **tool_input: Any) -> ReadStep:
@@ -138,42 +148,76 @@ def read_capability(capability_id: str, **tool_input: Any) -> ReadStep:
     )
 
 
+_DEFAULT_MCP_TOOLS = (
+    McpTool(
+        name="describe_schema",
+        description="Return the curated read-only views.",
+        input_schema={},
+    ),
+    McpTool(
+        name="run_select_query",
+        description="Execute a single read-only SELECT.",
+        input_schema={"sql": "string", "params": "array"},
+    ),
+)
+
+
 class FakeDataClient:
-    """Async stand-in for the MCP data channel. Scripts schema + per-sql results."""
+    """Async stand-in for the MCP data channel. Scripts discovery + tool calls."""
 
     def __init__(
         self,
         *,
+        tools: tuple[McpTool, ...] | None = None,
         schema: list[dict[str, Any]] | None = None,
         results: dict[str, dict[str, Any]] | None = None,
         error_sql: set[str] | None = None,
     ) -> None:
+        self._tools = tools if tools is not None else _DEFAULT_MCP_TOOLS
         self._schema = schema if schema is not None else [
             {"name": "mcp_read.sales", "description": "sales", "columns": [{"name": "amount"}]}
         ]
         self._results = results or {}
         self._error_sql = error_sql or set()
         self.closed = False
-        self.calls: list[str] = []
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def list_tools(self) -> tuple[McpTool, ...]:
+        return self._tools
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((name, arguments))
+        if name == "describe_schema":
+            return {"views": self._schema}
+        if name == "run_select_query":
+            sql = arguments.get("sql")
+            if isinstance(sql, str) and sql in self._error_sql:
+                from at_sql_analyser.mcp.data_client import DataClientError
+
+                raise DataClientError("rejected")
+            default = {
+                "sqlHash": "sha256:x",
+                "rowCount": 1,
+                "truncated": False,
+                "rows": [{"amount": 10}],
+            }
+            if isinstance(sql, str):
+                return self._results.get(sql, default)
+            return default
+        return self._results.get(name, {})
 
     async def describe_schema(self) -> list[dict[str, Any]]:
-        return self._schema
+        result = await self.call_tool("describe_schema", {})
+        views = result.get("views")
+        return list(views) if isinstance(views, list) else []
 
     async def run_select_query(
         self, sql: str, params: list[Any] | None = None
     ) -> dict[str, Any]:
-        self.calls.append(sql)
-        if sql in self._error_sql:
-            from at_sql_analyser.mcp.data_client import DataClientError
-
-            raise DataClientError("rejected")
-        default = {
-            "sqlHash": "sha256:x",
-            "rowCount": 1,
-            "truncated": False,
-            "rows": [{"amount": 10}],
-        }
-        return self._results.get(sql, default)
+        arguments: dict[str, Any] = {"sql": sql}
+        if params:
+            arguments["params"] = params
+        return await self.call_tool("run_select_query", arguments)
 
     async def aclose(self) -> None:
         self.closed = True

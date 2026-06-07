@@ -1,9 +1,10 @@
-import type { IssueActionStatus } from '@nova/database';
+import { IssueActionStatus } from '@nova/database';
 import { NotFoundError, ValidationError } from '@nova/shared';
 import { buildPaginatedResult, type PaginatedResult } from '../../http/pagination';
 import type { AuthContext } from '../../auth/auth-context';
 import { resolveCurrentUser } from '../users/current-user';
 import type { UserRepository } from '../users/user.repository';
+import type { IssueRepository } from '../issues/issue.repository';
 import {
   toActionCommentDto,
   toIssueActionDto,
@@ -11,6 +12,14 @@ import {
   type IssueActionDto,
 } from './action.dto';
 import type { ActionListFilter, ActionRepository } from './action.repository';
+
+export interface CreateActionInput {
+  readonly issueId: string;
+  readonly title: string;
+  readonly description: string;
+  readonly assignedOwnerId?: string | undefined;
+  readonly status?: IssueActionStatus | undefined;
+}
 
 export interface UpdateActionInput {
   readonly status?: IssueActionStatus | undefined;
@@ -27,6 +36,7 @@ export class ActionService {
   constructor(
     private readonly actions: ActionRepository,
     private readonly users: UserRepository,
+    private readonly issues: IssueRepository,
   ) {}
 
   async listActions(filter: ActionListFilter): Promise<PaginatedResult<IssueActionDto>> {
@@ -40,6 +50,28 @@ export class ActionService {
       throw new NotFoundError('Issue action not found.');
     }
     return toIssueActionDto(action);
+  }
+
+  async createAction(input: CreateActionInput, auth: AuthContext): Promise<IssueActionDto> {
+    if (!(await this.issues.findById(input.issueId))) {
+      throw new ValidationError('The referenced issue does not exist.');
+    }
+    const { user } = await resolveCurrentUser(this.users, auth);
+    const assignedOwnerId = input.assignedOwnerId ?? user.id;
+    if (!(await this.users.findById(assignedOwnerId))) {
+      throw new ValidationError('The assigned owner does not exist.');
+    }
+    const now = new Date();
+    const id = await this.actions.create({
+      issueId: input.issueId,
+      title: input.title,
+      description: input.description,
+      status: input.status ?? IssueActionStatus.PENDING,
+      assignedOwnerId,
+      createdDate: now,
+      updatedById: user.id,
+    });
+    return this.getActionById(id);
   }
 
   async updateAction(

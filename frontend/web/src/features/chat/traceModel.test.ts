@@ -97,9 +97,71 @@ describe('traceModel.buildTraceView', () => {
     const substep = view.invocations[0]!.substeps[0]!;
     expect(substep).toMatchObject({
       status: 'completed',
-      line: 'Read 1 row(s).',
+      line: 'run_select_query: read 1 row(s).',
       input: { sql: 'SELECT full_name FROM mcp_read.customers', params: [] },
       output: { rows: [{ full_name: 'Jane Doe' }], rowCount: 1 },
+    });
+  });
+
+  it('keeps the capability id on a merged structured-read sub-step', () => {
+    const events: AgentRunEventDto[] = [
+      event({ type: 'agent.call.started', sequence: 1, payload: { agent: 'at-sql-analyser' } }),
+      event({
+        type: 'agent.read.started',
+        sequence: 2,
+        payload: {
+          capability: 'customers.search',
+          tool: 'customers.search',
+          input: {},
+        },
+      }),
+      event({
+        type: 'agent.read.completed',
+        sequence: 3,
+        payload: {
+          capability: 'customers.search',
+          tool: 'customers.search',
+          rowCount: 12,
+          output: { rows: [], rowCount: 12 },
+        },
+      }),
+      event({ type: 'agent.call.completed', sequence: 4, payload: { agent: 'at-sql-analyser' } }),
+    ];
+
+    const view = buildTraceView(events);
+    expect(view.invocations[0]!.substeps).toHaveLength(1);
+    expect(view.invocations[0]!.substeps[0]).toMatchObject({
+      status: 'completed',
+      line: 'customers.search: found 12 record(s).',
+    });
+  });
+
+  it('merges agent.mcp start/terminal events like agent.query', () => {
+    const events: AgentRunEventDto[] = [
+      event({ type: 'agent.call.started', sequence: 1, payload: { agent: 'at-sql-analyser' } }),
+      event({
+        type: 'agent.mcp.started',
+        sequence: 2,
+        payload: {
+          tool: 'run_select_query',
+          input: { sql: 'SELECT id FROM mcp_read.customers LIMIT 50', params: [] },
+        },
+      }),
+      event({
+        type: 'agent.mcp.completed',
+        sequence: 3,
+        payload: {
+          tool: 'run_select_query',
+          rowCount: 3,
+          output: { rows: [{ id: '1' }, { id: '2' }, { id: '3' }], rowCount: 3 },
+        },
+      }),
+    ];
+
+    const view = buildTraceView(events);
+    expect(view.invocations[0]!.substeps[0]).toMatchObject({
+      status: 'completed',
+      line: 'run_select_query: read 3 row(s).',
     });
   });
 
@@ -193,7 +255,7 @@ describe('traceModel.buildTraceView', () => {
     // Default: only the user-facing query sub-step is shown.
     const plain = buildTraceView(events);
     expect(plain.invocations[0]!.substeps).toHaveLength(1);
-    expect(plain.invocations[0]!.substeps[0]!.line).toBe('Read 1 row(s).');
+    expect(plain.invocations[0]!.substeps[0]!.line).toBe('Read 1 row(s).'); // no tool in payload
 
     // Detailed: node execution + authz decision are surfaced too, marked technical.
     const full = buildTraceView(events, true);

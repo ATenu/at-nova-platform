@@ -276,7 +276,7 @@ def test_read_task_returns_progress_events() -> None:
     assert isinstance(events, list)
     types = {event["type"] for event in events}
     assert "agent.task.received" in types
-    assert "agent.query.completed" in types
+    assert "agent.mcp.completed" in types
 
 
 def test_read_task_returns_node_and_authz_events_with_monotonic_seq() -> None:
@@ -303,7 +303,7 @@ def test_denied_task_emits_no_progress_or_allow_events() -> None:
     assert body["status"] == "denied"
     types = {event["type"] for event in body["events"]}
     assert "agent.authz.allowed" not in types
-    assert "agent.query.started" not in types
+    assert "agent.mcp.started" not in types
     assert "agent.node.started" not in types
 
 

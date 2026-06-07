@@ -221,6 +221,66 @@ async def test_write_planner_receives_conversation_history() -> None:
     )
 
 
+async def test_sop_read_then_creates_multiple_actions() -> None:
+    cap = FakeCapabilityClient(
+        results={
+            "sop.read": CapabilityResult(
+                summary="SOP loaded",
+                data={
+                    "sop": {
+                        "id": "sop-1",
+                        "name": "Escalation policy",
+                        "fullText": "Step 1: notify owner\nStep 2: schedule follow-up",
+                    }
+                },
+            ),
+            "issues.list": CapabilityResult(
+                summary="1 issue",
+                data={"items": [{"id": "issue-1", "status": "in_assistance"}]},
+            ),
+        }
+    )
+    reasoner = FakeReasoner(
+        resolve_reads=[
+            ("sop.read", {}),
+            ("issues.list", {}),
+        ],
+        writes=[
+            WriteItem(
+                capability_id="actions.create",
+                input={
+                    "issueId": "issue-1",
+                    "title": "Notify owner",
+                    "description": "Step 1 from SOP",
+                },
+            ),
+            WriteItem(
+                capability_id="actions.create",
+                input={
+                    "issueId": "issue-1",
+                    "title": "Schedule follow-up",
+                    "description": "Step 2 from SOP",
+                },
+            ),
+        ],
+    )
+    deps = GraphDeps(
+        reasoner=reasoner,
+        limits=LIMITS,
+        capability_client=cap,
+        authorize=_allow_all,
+        on_event=lambda _t, _p: None,
+    )
+    result = await run_task(_task(), deps)
+    assert result.status == "completed"
+    assert [capability_id for capability_id, _ in cap.calls] == [
+        "sop.read",
+        "issues.list",
+        "actions.create",
+        "actions.create",
+    ]
+
+
 async def test_write_event_traces_stay_pii_free() -> None:
     # The owner's own stream carries the full capability input/output (so every
     # write is trackable end to end), but the SCRUBBED trace that reaches logs /

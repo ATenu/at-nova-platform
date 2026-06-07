@@ -172,7 +172,7 @@ export function createApp(deps: AppDependencies): Express {
   const productService = new ProductService(productRepository);
   const saleService = new SaleService(saleRepository, productRepository, customerRepository);
   const issueService = new IssueService(issueRepository, saleRepository);
-  const actionService = new ActionService(actionRepository, userRepository);
+  const actionService = new ActionService(actionRepository, userRepository, issueRepository);
   const sopService = new SopService(sopRepository, userRepository);
   const adminUserService = new AdminUserService(userRepository, provisioning);
   const rbacService = new RbacService();

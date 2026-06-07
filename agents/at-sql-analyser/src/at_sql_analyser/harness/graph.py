@@ -1,14 +1,15 @@
 """The autonomous SQL-analyst DAG (LangGraph).
 
 A bounded, guarded directed graph the agent navigates by LLM judgment. The read
-path is a ReAct loop over TWO tool families — free-form SQL (DB MCP server) and
-entitled structured read capabilities (Node gateway) — that the planner
-interleaves to resolve references and answer the question:
+path is a ReAct loop over TWO tool families — live MCP tools (native
+``tools/list`` + ``tools/call``) and entitled structured read capabilities (Node
+gateway) — that the planner interleaves to resolve references and answer the
+question:
 
-    start ─▶ load_schema ─▶ plan_read ─┬─▶ validate ─▶ execute ─────▶ critique ─┐
-                              ▲         │                                        │
-                              │         └─▶ dispatch_read ───────────▶ critique ─┤
-                              └────────────────── (loop) ◀──── refine ───────────┘
+    start ─▶ discover_tools ─▶ load_schema ─▶ plan_read ─┬─▶ dispatch_mcp ─▶ critique ─┐
+                              ▲                           │                              │
+                              │                           └─▶ dispatch_read ─▶ critique ─┤
+                              └────────────────────────────── (loop) ◀──── refine ─────────┘
                                                                   │
                                               satisfied / budget ─▶ compose ─▶ END
 
@@ -45,7 +46,7 @@ from typing import Any, Literal, cast, get_args
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from ..mcp.data_client import DataClient, DataClientError
+from ..mcp.data_client import DataClient, DataClientError, McpTool, schema_tool_names
 from ..observability import langfuse_tracing as lf
 from ..skills import AGENT_NAME
 from ..tools.capability_client import CapabilityClient, CapabilityClientError
@@ -112,10 +113,6 @@ class GraphDeps:
     data_client: DataClient | None = None
     capability_client: CapabilityClient | None = None
     authorize: Authorizer | None = None
-    # Whether the free-form SQL tool family is offered this run. True only when
-    # the caller holds the data-layer entitlement (``data.query.select``); when
-    # False the read loop uses ONLY the entitled structured read capabilities.
-    sql_enabled: bool = True
     on_event: EventSink = _noop
     clock: Callable[[], float] = time.monotonic
     # Read-only, orchestrator-aligned prior-turn context (from redis-agent). The
@@ -171,17 +168,27 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
         return {"started_monotonic": deps.clock(), "iteration": 0, "write_outcomes": []}
 
     def route_intent(state: GraphState) -> str:
-        return "plan_write" if state.get("intent") == "write" else "load_schema"
+        return "plan_write" if state.get("intent") == "write" else "discover_tools"
 
     # -- read path ----------------------------------------------------------
+    async def discover_tools(state: GraphState) -> dict[str, Any]:
+        tools: tuple[McpTool, ...] = ()
+        if deps.data_client is not None:
+            try:
+                with lf.tool_span("mcp:list_tools"):
+                    tools = await deps.data_client.list_tools()
+            except DataClientError:
+                tools = ()
+        emit("agent.mcp.discovered", {"toolCount": len(tools)})
+        return {"mcp_tools": tools}
+
     async def load_schema(state: GraphState) -> dict[str, Any]:
-        # The schema is only useful for the free-form SQL family. When SQL is not
-        # available (caller lacks `data.query.select`) skip the MCP round trip
-        # entirely — the MCP server would deny it — and plan from structured
-        # reads only. The set of views returned is already filtered by the MCP
-        # server to those the caller is entitled to (per-view domain permission).
+        # Schema discovery runs only when the live MCP surface advertises a
+        # schema tool. Views are filtered server-side to those the caller is
+        # entitled to (per-view domain permission).
         views: tuple[SchemaView, ...] = ()
-        if deps.sql_enabled and deps.data_client is not None:
+        mcp_tools = state.get("mcp_tools", ())
+        if "describe_schema" in schema_tool_names(mcp_tools) and deps.data_client is not None:
             try:
                 with lf.tool_span("mcp:describe_schema"):
                     raw = await deps.data_client.describe_schema()
@@ -200,15 +207,17 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
             limits=deps.limits,
         )
         if guard.stop:
-            return {"route": "compose", "reason": guard.reason, "pending_sql": "",
+            return {"route": "compose", "reason": guard.reason, "pending_mcp": None,
                     "pending_read": None}
         authorized_reads = _authorized_read_ids(deps.authorize)
+        mcp_tools = state.get("mcp_tools", ())
+        discovered = _discovered_tool_names(mcp_tools)
         decision = await deps.reasoner.plan_read_step(
             goal=state["goal"],
             schema=state.get("schema", ()),
+            mcp_tools=mcp_tools,
             authorized_reads=authorized_reads,
             history=tuple(state.get("attempts", [])),
-            sql_enabled=deps.sql_enabled,
             conversation_history=deps.conversation_history,
         )
         if (
@@ -225,18 +234,40 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
             return {
                 "route": "dispatch_read",
                 "pending_read": call,
-                "pending_sql": "",
+                "pending_mcp": None,
                 "iteration": iteration + 1,
             }
-        if decision.action == "sql" and deps.sql_enabled and decision.sql.strip():
+        if (
+            decision.action == "mcp_tool"
+            and decision.tool_name in discovered
+        ):
             return {
-                "route": "validate",
-                "pending_sql": decision.sql,
-                "pending_params": list(decision.params),
+                "route": "dispatch_mcp",
+                "pending_mcp": {
+                    "tool_name": decision.tool_name,
+                    "tool_input": dict(decision.tool_input),
+                },
                 "pending_read": None,
                 "iteration": iteration + 1,
             }
-        return {"route": "compose", "pending_sql": "", "pending_read": None}
+        return {"route": "compose", "pending_mcp": None, "pending_read": None}
+
+    async def dispatch_mcp(state: GraphState) -> dict[str, Any]:
+        pending = state.get("pending_mcp")
+        if not isinstance(pending, dict):
+            return {"route": "critique"}
+        tool_name = pending.get("tool_name")
+        tool_input = pending.get("tool_input")
+        if not isinstance(tool_name, str) or not isinstance(tool_input, dict):
+            return {"route": "critique"}
+        attempt = await _dispatch_mcp_tool(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            data_client=deps.data_client,
+            index=len(state.get("attempts", [])),
+            emit=emit,
+        )
+        return {"route": "critique", "attempts": [attempt], "pending_mcp": None}
 
     async def dispatch_read(state: GraphState) -> dict[str, Any]:
         call = state.get("pending_read")
@@ -251,55 +282,6 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
             emit=emit,
         )
         return {"route": "critique", "attempts": [attempt], "pending_read": None}
-
-    async def validate(state: GraphState) -> dict[str, Any]:
-        sql = state.get("pending_sql", "")
-        error = local_validation_error(sql)
-        if error is not None:
-            attempt = QueryAttempt(
-                sql=sql, sql_hash=hash_sql(sql), row_count=0, truncated=False,
-                error=f"local_validation:{error}",
-            )
-            emit("agent.query.rejected", {"reason": error})
-            return {"route": "critique", "skip_execute": True, "attempts": [attempt]}
-        return {"route": "execute", "skip_execute": False}
-
-    async def execute(state: GraphState) -> dict[str, Any]:
-        sql = state.get("pending_sql", "")
-        params = list(state.get("pending_params", []))
-        # The owner's trace surfaces the tool name + verbatim input (SQL + params)
-        # and output (rows). The tracer (Langfuse) still scrubs `sql`/`rows`, so
-        # the full data only ever travels the owner's own SSE/webhook channel.
-        emit(
-            "agent.query.started",
-            {
-                "tool": "run_select_query",
-                "sqlHash": hash_sql(sql),
-                "input": {"sql": sql, "params": params},
-            },
-        )
-        with lf.tool_span("mcp:run_select_query", sqlHash=hash_sql(sql)):
-            attempt = await _execute_query(deps.data_client, sql, params)
-        completed: dict[str, Any] = {
-            "tool": "run_select_query",
-            "sqlHash": attempt.sql_hash,
-            "rowCount": attempt.row_count,
-            "truncated": attempt.truncated,
-            "error": attempt.error is not None,
-        }
-        # Carry the caller-safe failure reason (e.g. the SQL-rejection code +
-        # offending view) so the trace shows WHY a query failed instead of a
-        # misleading "0 rows". Never SQL text, params, or rows in the reason.
-        if attempt.error is not None:
-            completed["reason"] = attempt.error
-        else:
-            completed["output"] = {
-                "rows": [dict(row) for row in attempt.rows],
-                "rowCount": attempt.row_count,
-                "truncated": attempt.truncated,
-            }
-        emit("agent.query.completed", completed)
-        return {"attempts": [attempt]}
 
     async def critique(state: GraphState) -> dict[str, Any]:
         outcome = await deps.reasoner.critique(
@@ -472,11 +454,11 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
 
     builder = StateGraph(GraphState)
     builder.add_node("start", instrument("start", start))
+    builder.add_node("discover_tools", instrument("discover_tools", discover_tools))
     builder.add_node("load_schema", instrument("load_schema", load_schema))
     builder.add_node("plan_read", instrument("plan_read", plan_read))
+    builder.add_node("dispatch_mcp", instrument("dispatch_mcp", dispatch_mcp))
     builder.add_node("dispatch_read", instrument("dispatch_read", dispatch_read))
-    builder.add_node("validate", instrument("validate", validate))
-    builder.add_node("execute", instrument("execute", execute))
     builder.add_node("critique", instrument("critique", critique))
     builder.add_node("compose", instrument("compose", compose))
     builder.add_node("plan_write", instrument("plan_write", plan_write))
@@ -486,18 +468,22 @@ def build_graph(deps: GraphDeps) -> CompiledStateGraph:
 
     builder.add_edge(START, "start")
     builder.add_conditional_edges(
-        "start", route_intent, {"load_schema": "load_schema", "plan_write": "plan_write"}
+        "start",
+        route_intent,
+        {"discover_tools": "discover_tools", "plan_write": "plan_write"},
     )
+    builder.add_edge("discover_tools", "load_schema")
     builder.add_edge("load_schema", "plan_read")
     builder.add_conditional_edges(
         "plan_read",
         _route,
-        {"validate": "validate", "dispatch_read": "dispatch_read", "compose": "compose"},
+        {
+            "dispatch_mcp": "dispatch_mcp",
+            "dispatch_read": "dispatch_read",
+            "compose": "compose",
+        },
     )
-    builder.add_conditional_edges(
-        "validate", _route, {"execute": "execute", "critique": "critique"}
-    )
-    builder.add_edge("execute", "critique")
+    builder.add_edge("dispatch_mcp", "critique")
     builder.add_edge("dispatch_read", "critique")
     builder.add_conditional_edges(
         "critique", _route, {"plan_read": "plan_read", "compose": "compose"}
@@ -572,27 +558,96 @@ def _parse_schema(raw: list[dict[str, Any]]) -> tuple[SchemaView, ...]:
     return tuple(views)
 
 
-async def _execute_query(
-    data_client: DataClient | None, sql: str, params: list[Any]
+def _discovered_tool_names(mcp_tools: tuple[McpTool, ...]) -> frozenset[str]:
+    return frozenset(tool.name for tool in mcp_tools if tool.name)
+
+
+def _rows_from_mcp_data(data: object) -> tuple[dict[str, Any], ...]:
+    """Coerce an MCP tool result into rows for grounding + critique."""
+    if isinstance(data, list):
+        return tuple(row for row in data if isinstance(row, dict))
+    if isinstance(data, dict):
+        for key in ("rows", "items", "results", "data", "views"):
+            inner = data.get(key)
+            if isinstance(inner, list):
+                return tuple(row for row in inner if isinstance(row, dict))
+        return (data,)
+    return ()
+
+
+async def _dispatch_mcp_tool(
+    *,
+    tool_name: str,
+    tool_input: dict[str, Any],
+    data_client: DataClient | None,
+    index: int,
+    emit: EventSink,
 ) -> QueryAttempt:
-    sql_hash = hash_sql(sql)
+    label = f"{tool_name} input={json.dumps(tool_input, sort_keys=True, default=str)}"
+    step_hash = hash_sql(f"mcp:{label}")
+    if tool_name == "run_select_query":
+        sql = tool_input.get("sql")
+        if isinstance(sql, str):
+            error = local_validation_error(sql)
+            if error is not None:
+                emit("agent.mcp.rejected", {"tool": tool_name, "reason": error})
+                return QueryAttempt(
+                    sql=label,
+                    sql_hash=step_hash,
+                    row_count=0,
+                    truncated=False,
+                    error=f"local_validation:{error}",
+                    source="mcp",
+                    tool_name=tool_name,
+                )
+    emit(
+        "agent.mcp.started",
+        {"tool": tool_name, "input": dict(tool_input), "index": index},
+    )
     if data_client is None:
-        return QueryAttempt(sql, sql_hash, 0, False, "no_data_channel")
+        return QueryAttempt(
+            sql=label,
+            sql_hash=step_hash,
+            row_count=0,
+            truncated=False,
+            error="no_data_channel",
+            source="mcp",
+            tool_name=tool_name,
+        )
     try:
-        result = await data_client.run_select_query(sql, params)
+        with lf.tool_span(f"mcp:{tool_name}", tool=tool_name):
+            result = await data_client.call_tool(tool_name, tool_input)
     except DataClientError as exc:
-        return QueryAttempt(sql, sql_hash, 0, False, str(exc))
-    rows = result.get("rows")
-    row_tuple = tuple(rows) if isinstance(rows, list) else ()
-    server_hash = result.get("sqlHash")
+        emit("agent.mcp.failed", {"tool": tool_name, "reason": str(exc)[:256]})
+        return QueryAttempt(
+            sql=label,
+            sql_hash=step_hash,
+            row_count=0,
+            truncated=False,
+            error=str(exc),
+            source="mcp",
+            tool_name=tool_name,
+        )
+    rows = _rows_from_mcp_data(result)
+    completed: dict[str, Any] = {
+        "tool": tool_name,
+        "rowCount": len(rows),
+        "output": {"rows": [dict(row) for row in rows], "rowCount": len(rows)},
+    }
+    if tool_name == "run_select_query":
+        completed["sqlHash"] = result.get("sqlHash", step_hash)
+        completed["truncated"] = bool(result.get("truncated"))
+    emit("agent.mcp.completed", completed)
     row_count = result.get("rowCount")
     return QueryAttempt(
-        sql=sql,
-        sql_hash=server_hash if isinstance(server_hash, str) else sql_hash,
-        row_count=row_count if isinstance(row_count, int) else len(row_tuple),
+        sql=label,
+        sql_hash=result.get("sqlHash") if isinstance(result.get("sqlHash"), str) else step_hash,
+        row_count=row_count if isinstance(row_count, int) else len(rows),
         truncated=bool(result.get("truncated")),
         error=None,
-        rows=row_tuple,
+        rows=rows,
+        source="mcp",
+        tool_name=tool_name,
     )
 
 
@@ -611,6 +666,7 @@ def _authorized_write_ids(authorize: Authorizer | None) -> tuple[str, ...]:
 
 # Preferred resolver reads when the planner refuses to advance (bootstrap order).
 _RESOLVE_READ_PRIORITY: tuple[str, ...] = (
+    "sop.read",
     "issues.list",
     "actions.list",
     "actions.next",

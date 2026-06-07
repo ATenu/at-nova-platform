@@ -306,7 +306,7 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
     "admin": [
         "read-customers", "write-customers", "create-issues", "read-issues", "write-issues",
         "read-sales", "write-sales", "read-permissions", "write-permissions", "read-actions",
-        "write-actions", "read-sop", "write-sop", "read-users", "write-users",
+        "create-actions", "write-actions", "read-sop", "write-sop", "read-users", "write-users",
         "create-agent-run", "read-agent-run", "cancel-agent-run",
     ],
     "ops-compliance": [
@@ -315,7 +315,7 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
     ],
     "customer-support": [
         "read-customers", "create-issues", "read-issues", "write-issues", "read-sales",
-        "read-actions", "write-actions", "create-agent-run", "read-agent-run", "cancel-agent-run",
+        "read-actions", "create-actions", "write-actions", "create-agent-run", "read-agent-run", "cancel-agent-run",
     ],
 }
 
@@ -344,6 +344,7 @@ CAPABILITY_REQUIRED_PERMISSIONS: dict[str, list[str]] = {
     "issues.get": ["read-issues"],
     "actions.list": ["read-actions"],
     "actions.get": ["read-actions"],
+    "actions.create": ["create-actions"],
     "actions.addComment": ["write-actions"],
     "actions.update": ["write-actions"],
     "issues.update": ["write-issues"],

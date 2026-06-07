@@ -8,10 +8,16 @@ import type { ActionService } from './action.service';
 import {
   actionIdParamsSchema,
   addCommentBodySchema,
+  createActionBodySchema,
   listActionsQuerySchema,
   updateActionBodySchema,
 } from './action.schema';
 
+const createActionPolicy = defineRoutePolicy({
+  routeId: 'actions.create',
+  permission: 'create-actions',
+  audit: true,
+});
 const listActionsPolicy = defineRoutePolicy({ routeId: 'actions.list', permission: 'read-actions', audit: true });
 const updateActionPolicy = defineRoutePolicy({
   routeId: 'actions.update',
@@ -32,6 +38,14 @@ export interface ActionRouterDeps {
 export function createActionRouter(deps: ActionRouterDeps): Router {
   const router = Router();
   const controller = new ActionController(deps.service);
+
+  router.post(
+    '/',
+    deps.authenticate,
+    authorize(createActionPolicy),
+    validateRequest({ body: createActionBodySchema }),
+    asyncHandler(controller.create),
+  );
 
   router.get(
     '/',

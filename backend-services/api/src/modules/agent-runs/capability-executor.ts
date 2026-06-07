@@ -89,6 +89,12 @@ const actionsListInput = z.object({
 });
 
 // --- Write inputs ----------------------------------------------------------
+const actionsCreateInput = z.object({
+  issueId: z.string().uuid(),
+  title: z.string().trim().min(1).max(255),
+  description: z.string().trim().min(1).max(2000),
+  assignedOwnerId: z.string().uuid().optional(),
+});
 const actionAddCommentInput = z.object({
   actionId: z.string().uuid(),
   comment: z.string().trim().min(1).max(2000),
@@ -189,6 +195,8 @@ export class CapabilityExecutor {
       case 'actions.get':
         return this.getAction(rawInput);
       // --- Domain writes ----------------------------------------------------
+      case 'actions.create':
+        return this.createAction(rawInput, auth);
       case 'actions.addComment':
         return this.addActionComment(rawInput, auth);
       case 'actions.update':
@@ -565,6 +573,25 @@ export class CapabilityExecutor {
   }
 
   // --- Domain writes ---------------------------------------------------------
+
+  private async createAction(input: unknown, auth: AuthContext): Promise<ToolCallResult> {
+    const data = this.parse(actionsCreateInput, input);
+    const action = await this.services.actions.createAction(
+      {
+        issueId: data.issueId,
+        title: data.title,
+        description: data.description,
+        ...(data.assignedOwnerId !== undefined ? { assignedOwnerId: data.assignedOwnerId } : {}),
+      },
+      auth,
+    );
+    return {
+      capabilityId: 'actions.create',
+      summary: `Created action "${action.title}".`,
+      data: { action },
+      links: [{ label: 'Open action', href: `nova://action/${action.id}`, type: 'action' }],
+    };
+  }
 
   private async addActionComment(input: unknown, auth: AuthContext): Promise<ToolCallResult> {
     const { actionId, comment } = this.parse(actionAddCommentInput, input);

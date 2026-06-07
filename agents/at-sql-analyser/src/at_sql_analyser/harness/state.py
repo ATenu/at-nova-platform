@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal, TypedDict
 
+from ..mcp.data_client import McpTool
+
 
 @dataclass(frozen=True)
 class SchemaView:
@@ -25,8 +27,8 @@ class QueryAttempt:
     only; only the hash + row metadata are ever surfaced in events/logs.
 
     A read step is one of TWO families, distinguished by ``source``:
-      - ``"sql"`` (default): a free-form SELECT over the curated ``mcp_read``
-        views via the DB MCP server; ``sql`` holds the statement.
+      - ``"mcp"``: a native MCP tool call (``tool_name``) over the live session
+        surface discovered via ``tools/list``; ``sql`` holds a human label.
       - ``"capability"``: a structured, cataloged read capability dispatched via
         the Node gateway (e.g. ``customers.search`` -> ``sales.report.customer``);
         ``capability_id`` is set and ``sql`` holds a human label, not SQL.
@@ -40,7 +42,8 @@ class QueryAttempt:
     truncated: bool
     error: str | None
     rows: tuple[dict[str, Any], ...] = ()
-    source: Literal["sql", "capability"] = "sql"
+    source: Literal["mcp", "capability"] = "mcp"
+    tool_name: str | None = None
     capability_id: str | None = None
 
 
@@ -107,12 +110,12 @@ class GraphState(TypedDict, total=False):
     intent: Literal["read", "write"]
     started_monotonic: float
     schema: tuple[SchemaView, ...]
+    mcp_tools: tuple[McpTool, ...]
     attempts: Annotated[list[QueryAttempt], _append_attempt]
     iteration: int
     route: str
-    pending_sql: str
-    pending_params: list[str]
-    skip_execute: bool
+    # The MCP tool the planner chose this turn; dispatched in ``dispatch_mcp``.
+    pending_mcp: dict[str, Any] | None
     # The structured read capability the planner chose this turn (resolver /
     # detail read / scoped report); dispatched + re-gated in ``dispatch_read``.
     pending_read: CapabilityCall | None

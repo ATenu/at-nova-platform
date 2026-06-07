@@ -1,10 +1,25 @@
 import type { Request, Response } from 'express';
 import { UnauthenticatedError } from '@nova/shared';
 import type { ActionService } from './action.service';
-import type { ActionIdParams, AddCommentBody, ListActionsQuery, UpdateActionBody } from './action.schema';
+import type {
+  ActionIdParams,
+  AddCommentBody,
+  CreateActionBody,
+  ListActionsQuery,
+  UpdateActionBody,
+} from './action.schema';
 
 export class ActionController {
   constructor(private readonly service: ActionService) {}
+
+  create = async (req: Request, res: Response): Promise<void> => {
+    if (!req.auth) {
+      throw new UnauthenticatedError();
+    }
+    const body = req.body as CreateActionBody;
+    const action = await this.service.createAction(body, req.auth);
+    res.status(201).json(action);
+  };
 
   list = async (req: Request, res: Response): Promise<void> => {
     const query = req.query as unknown as ListActionsQuery;

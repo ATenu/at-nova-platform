@@ -20,6 +20,16 @@ export interface UpdateActionData {
   readonly updatedById: string;
 }
 
+export interface CreateActionData {
+  readonly issueId: string;
+  readonly title: string;
+  readonly description: string;
+  readonly status: IssueActionStatus;
+  readonly assignedOwnerId: string;
+  readonly createdDate: Date;
+  readonly updatedById: string;
+}
+
 export interface CreateCommentData {
   readonly issueActionId: string;
   readonly userId: string;
@@ -78,6 +88,21 @@ export class ActionRepository {
 
   async exists(id: string): Promise<boolean> {
     return this.actions.exists({ where: { id } });
+  }
+
+  async create(data: CreateActionData): Promise<string> {
+    const action = this.actions.create({
+      issueId: data.issueId,
+      title: data.title,
+      description: data.description,
+      status: data.status,
+      assignedOwnerId: data.assignedOwnerId,
+      createdDate: data.createdDate,
+      updatedById: data.updatedById,
+      updatedAI: false,
+    });
+    const saved = await this.actions.save(action);
+    return saved.id;
   }
 
   async update(id: string, data: UpdateActionData): Promise<void> {

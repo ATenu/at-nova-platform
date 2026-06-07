@@ -47,7 +47,8 @@ export const rbacStore: {
   ],
   permissions: [
     'read-customers', 'write-customers', 'create-issues', 'read-issues', 'write-issues',
-    'read-sales', 'write-sales', 'read-permissions', 'write-permissions', 'read-actions',
+    'read-sales', 'write-sales', 'read-permissions', 'write-permissions',     'read-actions',
+    'create-actions',
     'write-actions', 'read-sop', 'write-sop', 'read-users', 'write-users',
     'create-agent-run', 'read-agent-run', 'cancel-agent-run',
     'read-agents', 'write-agents',
@@ -63,15 +64,16 @@ export const rbacStore: {
     ],
     admin: [
       'read-customers', 'write-customers', 'create-issues', 'read-issues', 'write-issues',
-      'read-sales', 'write-sales', 'read-permissions', 'write-permissions', 'read-actions',
-      'write-actions', 'read-sop', 'write-sop', 'read-users', 'write-users',
+      'read-sales', 'write-sales', 'read-permissions', 'write-permissions',     'read-actions',
+    'create-actions',
+    'write-actions', 'read-sop', 'write-sop', 'read-users', 'write-users',
       'create-agent-run', 'read-agent-run', 'cancel-agent-run',
       'read-agents', 'write-agents',
     ],
     'ops-compliance': ['read-sop', 'write-sop', 'create-agent-run', 'read-agent-run', 'cancel-agent-run'],
     'customer-support': [
       'read-customers', 'create-issues', 'read-issues', 'write-issues', 'read-sales',
-      'read-actions', 'write-actions', 'create-agent-run', 'read-agent-run', 'cancel-agent-run',
+      'read-actions', 'create-actions', 'write-actions', 'create-agent-run', 'read-agent-run', 'cancel-agent-run',
     ],
   },
   capabilities: [
@@ -592,6 +594,7 @@ export const conversationsStore: Mutable<ConversationDto>[] = [
 
 export const ALL_PERMISSIONS = [
   'read-customers', 'write-customers', 'create-issues', 'read-issues', 'write-issues',
-  'read-sales', 'write-sales', 'read-permissions', 'write-permissions', 'read-actions',
-  'write-actions', 'read-sop', 'write-sop', 'read-users', 'write-users',
+  'read-sales', 'write-sales', 'read-permissions', 'write-permissions',     'read-actions',
+    'create-actions',
+    'write-actions', 'read-sop', 'write-sop', 'read-users', 'write-users',
 ] as const;

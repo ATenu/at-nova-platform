@@ -5,11 +5,16 @@ SDK. One client instance per run: the session carries the audience-restricted
 token (``aud: nova-mcp-data``) and the run id so the server can fetch and
 re-verify the entitlement snapshot. The agent treats every tool result as
 untrusted data and can only ever reach the curated, server-validated views.
+
+Native protocol flow per run: ``initialize`` -> ``tools/list`` -> ``tools/call``.
+The harness discovers the live tool surface from ``tools/list`` and dispatches
+generically via ``call_tool``; it never hardcodes which tools exist.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 from ..auth.tokens import ServiceTokenClient
@@ -19,6 +24,16 @@ if TYPE_CHECKING:
 
 _DESCRIBE_TOOL = "describe_schema"
 _SELECT_TOOL = "run_select_query"
+_SCHEMA_TOOLS = frozenset({_DESCRIBE_TOOL, "list_views"})
+
+
+@dataclass(frozen=True)
+class McpTool:
+    """One tool advertised by the MCP server via ``tools/list``."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
 
 
 class DataClientError(RuntimeError):
@@ -27,6 +42,10 @@ class DataClientError(RuntimeError):
 
 class DataClient(Protocol):
     """The read-only data surface the harness depends on (mockable in tests)."""
+
+    async def list_tools(self) -> tuple[McpTool, ...]: ...
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]: ...
 
     async def describe_schema(self) -> list[dict[str, Any]]: ...
 
@@ -54,6 +73,33 @@ class McpDataClient:
         self._scope = audience_scope
         self._session: ClientSession | None = None
         self._stack: Any | None = None
+
+    async def list_tools(self) -> tuple[McpTool, ...]:
+        session = await self._ensure_session()
+        try:
+            result = await session.list_tools()
+        except Exception as exc:  # noqa: BLE001 - discovery is fail-soft at the harness
+            raise DataClientError("could not list MCP tools") from exc
+        tools: list[McpTool] = []
+        for tool in getattr(result, "tools", ()) or ():
+            name = getattr(tool, "name", None)
+            if not isinstance(name, str) or not name:
+                continue
+            description = getattr(tool, "description", None)
+            schema = getattr(tool, "inputSchema", None)
+            if schema is None:
+                schema = getattr(tool, "input_schema", None)
+            tools.append(
+                McpTool(
+                    name=name,
+                    description=description if isinstance(description, str) else "",
+                    input_schema=schema if isinstance(schema, dict) else {},
+                )
+            )
+        return tuple(tools)
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        return await self._call(name, arguments)
 
     async def describe_schema(self) -> list[dict[str, Any]]:
         result = await self._call(_DESCRIBE_TOOL, {})
@@ -124,7 +170,12 @@ class McpDataClient:
         return structured if isinstance(structured, dict) else {}
 
 
-def _error_detail(result: Any) -> str:
+def schema_tool_names(tools: tuple[McpTool, ...]) -> frozenset[str]:
+    """Names of schema-discovery tools present in a discovered tool set."""
+    return frozenset(tool.name for tool in tools if tool.name in _SCHEMA_TOOLS)
+
+
+def _error_detail(result: object) -> str:
     """Extract the caller-safe ``{error, message}`` an MCP tool returns on error.
 
     The DB MCP server returns errors as a single text content part holding
