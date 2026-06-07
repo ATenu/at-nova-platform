@@ -129,12 +129,21 @@ _WRITE_SKILL = AdvertisedSkill(
     id=SKILL_ACT_WRITE,
     name="Act on data",
     description=(
-        "High-risk write dispatcher that carries out a requested change by "
-        "invoking an already-cataloged, permission-gated write capability (each "
-        "independently gated and, by default, approval-gated; the agent mints no "
-        "write authority itself). Use only when the user clearly requests a "
-        "create, update, mark, close, or resolve action and a specific write "
-        "capability applies - never for read-only questions."
+        "High-risk write dispatcher that carries out a requested change to the "
+        "user's business data by invoking an already-cataloged, permission-gated "
+        "write capability (each independently gated and, by default, "
+        "approval-gated; the agent mints no write authority itself). The "
+        "cataloged writes let it: record a new sale (sales); open a new customer "
+        "issue and update an existing one - e.g. change its status, mark it "
+        "resolved or closed (issues); update an action, mark an action completed, "
+        "and add a comment to an action (actions); and author a new SOP, update "
+        "an SOP, or add a new version of an SOP (standard operating procedures). "
+        "Each capability writes only to its own business area and is re-checked "
+        "against the acting user's permissions per call, so the change applies "
+        "only where a specific cataloged write capability exists and the user is "
+        "entitled. Use only when the user clearly requests a create, update, add, "
+        "mark, close, or resolve action that one of these capabilities covers - "
+        "never for read-only questions."
     ),
     intent_keywords=(
         "create",
