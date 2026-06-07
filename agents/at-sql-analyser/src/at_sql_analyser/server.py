@@ -733,7 +733,41 @@ def create_app(
             )
 
     agent_card = build_agent_card(cfg, resolved_catalog)
-    a2a_app = A2AStarletteApplication(agent_card=agent_card, http_handler=handler)
+
+    def build_live_card() -> AgentCard:
+        """Single source of truth for the agent's current discovery card.
+
+        Re-derives the card from the live MCP view catalog so the agent's
+        advertised data surface always reflects reality. Used by BOTH the native
+        A2A discovery endpoint (``card_modifier`` below) and the orchestrator
+        heartbeat, so the served card and the published card never drift. When a
+        catalog is injected (tests) the startup card is authoritative and is
+        returned as-is; ``fetch_catalog`` is itself fail-soft (``[]`` on any
+        failure), so a discovery hiccup falls back to the static description and
+        never blocks serving.
+        """
+        if catalog is not None:
+            return agent_card
+        live_catalog = fetch_catalog(
+            base_url=cfg.db_mcp_url,
+            tokens=tokens,
+            audience_scope=cfg.mcp_audience_scope,
+        )
+        return build_agent_card(cfg, live_catalog)
+
+    async def card_modifier(_card: AgentCard) -> AgentCard:
+        # Native A2A: rebuild the served card per discovery request so external
+        # callers see the same live surface as the orchestrator. Run off the
+        # event loop because catalog discovery does blocking IO.
+        return await asyncio.to_thread(build_live_card)
+
+    def build_card_payload() -> dict[str, Any]:
+        """Heartbeat payload: the live card serialised for the registrar."""
+        return build_live_card().model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    a2a_app = A2AStarletteApplication(
+        agent_card=agent_card, http_handler=handler, card_modifier=card_modifier
+    )
     app: Starlette = a2a_app.build()
 
     async def health(_request: Request) -> Response:
@@ -743,8 +777,10 @@ def create_app(
     app.add_middleware(BearerAuthMiddleware, resource_server=rs)
 
     # Native A2A discovery: publish our card to the orchestrator on startup +
-    # heartbeat (fail-soft; never blocks serving). Disabled in tests/dev via
-    # config, or replaced by an injected registrar.
+    # heartbeat (fail-soft; never blocks serving). The card is rebuilt each
+    # heartbeat (``build_card_payload``) from the SAME live source as the served
+    # well-known card, so it never goes stale. Disabled in tests/dev via config,
+    # or replaced by an injected registrar.
     the_registrar = registrar
     if the_registrar is None and cfg.registration_enabled:
         the_registrar = AgentRegistrar(
@@ -754,7 +790,7 @@ def create_app(
             name=AGENT_NAME,
             base_url=cfg.public_url,
             audience=cfg.agent_audience,
-            card=agent_card.model_dump(mode="json", by_alias=True, exclude_none=True),
+            card_provider=build_card_payload,
             heartbeat_s=cfg.registration_heartbeat_s,
         )
     if the_registrar is not None:

@@ -177,33 +177,43 @@ def create_app(config: OrchestratorConfig | None = None) -> FastAPI:
         if not skill_ids:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "card advertises no skills")
         now = datetime.now(UTC)
-        # Atomic upsert doubles as the heartbeat (refreshes last_seen_at).
-        statement = (
-            pg_insert(A2aAgentRegistration)
-            .values(
-                name=body.name,
-                base_url=body.baseUrl,
-                audience=body.audience,
-                card=body.card,
-                skill_ids=skill_ids,
-                registered_at=now,
-                last_seen_at=now,
-            )
-            .on_conflict_do_update(
-                index_elements=[A2aAgentRegistration.name],
-                set_={
-                    "base_url": body.baseUrl,
-                    "audience": body.audience,
-                    "card": body.card,
-                    "skill_ids": skill_ids,
-                    "last_seen_at": now,
-                },
-            )
-        )
         with get_session_factory(cfg)() as session:
-            session.execute(statement)
+            existing = session.get(A2aAgentRegistration, body.name)
+            if existing is None:
+                # First registration: insert. The on-conflict clause keeps the
+                # write idempotent if a replica's heartbeat races us in (treat it
+                # as a liveness refresh).
+                session.execute(
+                    pg_insert(A2aAgentRegistration)
+                    .values(
+                        name=body.name,
+                        base_url=body.baseUrl,
+                        audience=body.audience,
+                        card=body.card,
+                        skill_ids=skill_ids,
+                        registered_at=now,
+                        last_seen_at=now,
+                    )
+                    .on_conflict_do_update(
+                        index_elements=[A2aAgentRegistration.name],
+                        set_={"last_seen_at": now},
+                    )
+                )
+                session.commit()
+                return {"name": body.name, "status": "registered"}
+            # Heartbeat: ALWAYS refresh liveness + endpoint coordinates (the
+            # TTL gate must keep treating the agent as live). Only rewrite the
+            # card + derived skills when the published card actually changed, so
+            # an unchanged heartbeat is a pure liveness refresh, not card churn.
+            existing.last_seen_at = now
+            existing.base_url = body.baseUrl
+            existing.audience = body.audience
+            card_changed = existing.card != body.card
+            if card_changed:
+                existing.card = body.card
+                existing.skill_ids = skill_ids
             session.commit()
-        return {"name": body.name, "status": "registered"}
+        return {"name": body.name, "status": "updated" if card_changed else "heartbeat"}
 
     @app.post("/internal/agents/onboard", status_code=status.HTTP_201_CREATED)
     async def onboard_agent(

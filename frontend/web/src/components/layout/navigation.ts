@@ -48,6 +48,12 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         anyOf: ['read-permissions'],
       },
       {
+        to: '/app/admin/capabilities',
+        label: 'Capabilities',
+        icon: 'sparkles',
+        anyOf: ['read-permissions'],
+      },
+      {
         to: '/app/admin/agents',
         label: 'Agent Registry',
         icon: 'sparkles',

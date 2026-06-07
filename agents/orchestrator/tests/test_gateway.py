@@ -128,7 +128,7 @@ def test_register_rejects_card_without_skills(monkeypatch) -> None:
     assert response.status_code == 400
 
 
-def test_register_success_upserts(monkeypatch) -> None:
+def test_register_success_inserts_new_row(monkeypatch) -> None:
     client, session = _client(monkeypatch, azp="nova-agent-sql-analyst")
     response = client.post(
         "/internal/agents/register",
@@ -143,6 +143,74 @@ def test_register_success_upserts(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json() == {"name": "at-sql-analyser", "status": "registered"}
     assert len(session.executed) == 1
+    assert session.committed is True
+
+
+def test_register_unchanged_card_is_pure_liveness_heartbeat(monkeypatch) -> None:
+    # An existing row whose published card is unchanged: refresh liveness only,
+    # never rewrite the card / re-derive skills (no redundant card churn).
+    client, session = _client(monkeypatch, azp="nova-agent-sql-analyst")
+    row = SimpleNamespace(
+        card=_VALID_CARD,
+        skill_ids=["data.analyse.read"],
+        base_url="http://at-sql-analyser:8003",
+        audience="nova-agent-sql-analyst",
+        last_seen_at=None,
+    )
+    session.store["at-sql-analyser"] = row
+
+    response = client.post(
+        "/internal/agents/register",
+        headers=_AUTH,
+        json={
+            "name": "at-sql-analyser",
+            "baseUrl": "http://at-sql-analyser:8003",
+            "audience": "nova-agent-sql-analyst",
+            "card": _VALID_CARD,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"name": "at-sql-analyser", "status": "heartbeat"}
+    assert row.last_seen_at is not None  # liveness refreshed
+    assert row.card is _VALID_CARD  # card NOT rewritten
+    assert session.executed == []  # no insert statement on the heartbeat path
+    assert session.committed is True
+
+
+def test_register_changed_card_updates_row(monkeypatch) -> None:
+    # A changed card propagates: rewrite the card + re-derived skills.
+    client, session = _client(monkeypatch, azp="nova-agent-sql-analyst")
+    row = SimpleNamespace(
+        card={"skills": [{"id": "data.analyse.read", "name": "old"}]},
+        skill_ids=["data.analyse.read"],
+        base_url="http://at-sql-analyser:8003",
+        audience="nova-agent-sql-analyst",
+        last_seen_at=None,
+    )
+    session.store["at-sql-analyser"] = row
+    new_card = {
+        "skills": [
+            {"id": "data.analyse.read", "name": "Analyse", "description": "d"},
+            {"id": "data.act.write", "name": "Act", "description": "w"},
+        ]
+    }
+
+    response = client.post(
+        "/internal/agents/register",
+        headers=_AUTH,
+        json={
+            "name": "at-sql-analyser",
+            "baseUrl": "http://at-sql-analyser:8003",
+            "audience": "nova-agent-sql-analyst",
+            "card": new_card,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"name": "at-sql-analyser", "status": "updated"}
+    assert row.card == new_card
+    assert row.skill_ids == ["data.analyse.read", "data.act.write"]
     assert session.committed is True
 
 

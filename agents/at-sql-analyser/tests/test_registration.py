@@ -61,7 +61,14 @@ class _FakeAsyncClient:
         return _FakeResponse(_FakeAsyncClient.status)
 
 
-def _registrar(tokens: _FakeTokens) -> AgentRegistrar:
+_DEFAULT_CARD = {"skills": [{"id": "data.analyse.read"}]}
+
+
+def _registrar(
+    tokens: _FakeTokens,
+    *,
+    card_provider: Any | None = None,
+) -> AgentRegistrar:
     return AgentRegistrar(
         orchestrator_url="http://orchestrator:8001",
         audience_scope="nova-orchestrator",
@@ -69,7 +76,7 @@ def _registrar(tokens: _FakeTokens) -> AgentRegistrar:
         name="at-sql-analyser",
         base_url="http://at-sql-analyser:8003",
         audience="nova-agent-sql-analyst",
-        card={"skills": [{"id": "data.analyse.read"}]},
+        card_provider=card_provider or (lambda: dict(_DEFAULT_CARD)),
         heartbeat_s=3600,
     )
 
@@ -95,6 +102,42 @@ async def test_register_once_posts_card_with_bearer(monkeypatch) -> None:
     assert call["json"]["baseUrl"] == "http://at-sql-analyser:8003"
     assert call["json"]["audience"] == "nova-agent-sql-analyst"
     assert call["json"]["card"] == {"skills": [{"id": "data.analyse.read"}]}
+
+
+async def test_register_once_rebuilds_card_each_call(monkeypatch) -> None:
+    # The provider is invoked per heartbeat so a changed data surface propagates
+    # without a restart (no frozen startup snapshot).
+    _reset_client(monkeypatch)
+    cards = [
+        {"skills": [{"id": "data.analyse.read", "name": "v1"}]},
+        {"skills": [{"id": "data.analyse.read", "name": "v2"}]},
+    ]
+    calls = {"n": 0}
+
+    def provider() -> dict[str, Any]:
+        card = cards[min(calls["n"], len(cards) - 1)]
+        calls["n"] += 1
+        return card
+
+    registrar = _registrar(_FakeTokens(), card_provider=provider)
+    await registrar.register_once()
+    await registrar.register_once()
+
+    assert calls["n"] == 2
+    assert _FakeAsyncClient.calls[0]["json"]["card"] == cards[0]
+    assert _FakeAsyncClient.calls[1]["json"]["card"] == cards[1]
+
+
+async def test_register_once_fails_soft_when_card_rebuild_raises(monkeypatch) -> None:
+    # A provider failure skips the heartbeat instead of crashing the loop.
+    _reset_client(monkeypatch)
+
+    def boom() -> dict[str, Any]:
+        raise RuntimeError("catalog blew up")
+
+    ok = await _registrar(_FakeTokens(), card_provider=boom).register_once()
+    assert ok is False
+    assert _FakeAsyncClient.calls == []
 
 
 async def test_register_once_returns_false_on_rejection(monkeypatch) -> None:

@@ -45,6 +45,24 @@ export function deletePermission(name: string): Promise<RbacWriteResult> {
 }
 
 // --- Capabilities ---
+
+/** Body for creating a capability. Mirrors the backend `createCapabilityBodySchema`. */
+export interface CreateCapabilityInput {
+  readonly id: string;
+  readonly kind: CapabilityDto['kind'];
+  readonly mode: CapabilityDto['mode'];
+  readonly risk: CapabilityDto['risk'];
+  readonly resourceScoped?: boolean;
+  readonly delegated?: boolean;
+  readonly requiresApproval?: boolean;
+  readonly requiredPermissions: readonly string[];
+  readonly description?: string | null;
+}
+
+export function createCapability(body: CreateCapabilityInput): Promise<RbacWriteResult> {
+  return http.post<RbacWriteResult>('/admin/capabilities', body);
+}
+
 export function updateCapability(
   id: string,
   body: Partial<
@@ -54,4 +72,8 @@ export function updateCapability(
   },
 ): Promise<RbacWriteResult> {
   return http.patch<RbacWriteResult>(`/admin/capabilities/${encodeURIComponent(id)}`, body);
+}
+
+export function deleteCapability(id: string): Promise<RbacWriteResult> {
+  return http.delete<RbacWriteResult>(`/admin/capabilities/${encodeURIComponent(id)}`);
 }

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -26,9 +27,20 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT_S = 10.0
 
+# Rebuilds the agent's discovery card from live sources (MCP view catalog). Must
+# be fail-soft and side-effect free: it runs on every heartbeat.
+CardProvider = Callable[[], dict[str, Any]]
+
 
 class AgentRegistrar:
-    """Posts the agent card to the orchestrator on startup + on a heartbeat."""
+    """Publishes the agent card to the orchestrator on startup + on a heartbeat.
+
+    The card is REBUILT on every heartbeat (``card_provider``) rather than frozen
+    at startup, so changes to the agent's live data surface propagate to the
+    orchestrator's routing menu without a restart. The heartbeat always POSTs
+    (the upsert doubles as the orchestrator's liveness refresh / TTL guard); the
+    orchestrator independently skips rewriting an unchanged card.
+    """
 
     def __init__(
         self,
@@ -39,7 +51,7 @@ class AgentRegistrar:
         name: str,
         base_url: str,
         audience: str,
-        card: dict[str, Any],
+        card_provider: CardProvider,
         heartbeat_s: int,
     ) -> None:
         root = orchestrator_url.rstrip("/")
@@ -48,12 +60,9 @@ class AgentRegistrar:
         self._audience_scope = audience_scope
         self._tokens = tokens
         self._name = name
-        self._payload: dict[str, Any] = {
-            "name": name,
-            "baseUrl": base_url,
-            "audience": audience,
-            "card": card,
-        }
+        self._base_url = base_url
+        self._audience = audience
+        self._card_provider = card_provider
         self._heartbeat_s = max(1, heartbeat_s)
         self._task: asyncio.Task[None] | None = None
 
@@ -65,14 +74,33 @@ class AgentRegistrar:
             return None
         return {"Authorization": f"Bearer {token}"}
 
+    async def _build_payload(self) -> dict[str, Any] | None:
+        # Rebuild off the event loop: the provider does blocking IO (catalog
+        # fetch / token mint). Fail-soft: a provider error skips this heartbeat
+        # rather than crashing the loop or serving.
+        try:
+            card = await asyncio.to_thread(self._card_provider)
+        except Exception:  # noqa: BLE001 - provider failure must never kill the heartbeat
+            logger.warning("a2a registration: failed to rebuild agent card")
+            return None
+        return {
+            "name": self._name,
+            "baseUrl": self._base_url,
+            "audience": self._audience,
+            "card": card,
+        }
+
     async def register_once(self) -> bool:
         headers = self._auth_header()
         if headers is None:
             return False
+        payload = await self._build_payload()
+        if payload is None:
+            return False
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
                 response = await client.post(
-                    self._register_url, json=self._payload, headers=headers
+                    self._register_url, json=payload, headers=headers
                 )
         except httpx.HTTPError:
             logger.warning("a2a registration: orchestrator unreachable")

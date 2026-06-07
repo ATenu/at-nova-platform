@@ -7,6 +7,7 @@ import type {
   ActionCommentDto,
   AdminUserDto,
   AgentRegistrationDto,
+  CapabilityDto,
   ConversationDto,
   CustomerDto,
   CustomerIssueDto,
@@ -34,6 +35,7 @@ export const rbacStore: {
   roles: Mutable<RoleDto>[];
   permissions: Mutable<PermissionDto>[];
   rolePermissions: Record<string, string[]>;
+  capabilities: Mutable<CapabilityDto>[];
 } = {
   revision: 1,
   roles: [
@@ -72,6 +74,23 @@ export const rbacStore: {
       'read-actions', 'write-actions', 'create-agent-run', 'read-agent-run', 'cancel-agent-run',
     ],
   },
+  capabilities: [
+    {
+      id: 'sales.report.customer', kind: 'agent-skill', mode: 'read', risk: 'low',
+      resourceScoped: false, delegated: true, enabled: true, requiresApproval: false,
+      isSystem: true, requiredPermissions: ['read-sales', 'read-customers'],
+    },
+    {
+      id: 'sales.create', kind: 'agent-skill', mode: 'write', risk: 'low',
+      resourceScoped: false, delegated: true, enabled: true, requiresApproval: false,
+      isSystem: true, requiredPermissions: ['write-sales'],
+    },
+    {
+      id: 'actions.markCompleted', kind: 'agent-skill', mode: 'write', risk: 'high',
+      resourceScoped: false, delegated: true, enabled: true, requiresApproval: true,
+      isSystem: true, requiredPermissions: ['write-actions'],
+    },
+  ],
 };
 
 export function permissionsFor(roles: readonly string[]): string[] {

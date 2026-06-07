@@ -55,6 +55,10 @@ function notFound(detail = 'Resource not found.') {
   return HttpResponse.json({ code: 'not_found', title: detail, status: 404 }, { status: 404 });
 }
 
+function badRequest(detail: string) {
+  return HttpResponse.json({ code: 'validation', title: detail, status: 400 }, { status: 400 });
+}
+
 function paginate<T>(items: readonly T[], url: URL): PaginatedResult<T> {
   const page = Number(url.searchParams.get('page') ?? '1') || 1;
   const pageSize = Number(url.searchParams.get('pageSize') ?? '20') || 20;
@@ -80,7 +84,10 @@ function registrySnapshot(): RbacRegistryDto {
     rolePermissions: Object.fromEntries(
       Object.entries(rbacStore.rolePermissions).map(([role, perms]) => [role, [...perms]]),
     ),
-    capabilities: [],
+    capabilities: rbacStore.capabilities.map((capability) => ({
+      ...capability,
+      requiredPermissions: [...capability.requiredPermissions],
+    })),
     routePolicies: [],
     viewPermissions: [],
   };
@@ -265,6 +272,72 @@ export const handlers = [
         rbacStore.rolePermissions[role] = grants.filter((p) => p !== name);
       }
     }
+    return writeResult();
+  }),
+
+  // ---- Admin: capabilities (DB-driven, mutable) ----
+  http.post(`${API}/admin/capabilities`, async ({ request }) => {
+    const body = (await request.json()) as {
+      id: string;
+      kind: 'agent-skill' | 'mcp-tool';
+      mode: 'read' | 'write';
+      risk: 'low' | 'high';
+      resourceScoped?: boolean;
+      delegated?: boolean;
+      requiresApproval?: boolean;
+      requiredPermissions: string[];
+      description?: string | null;
+    };
+    if (rbacStore.capabilities.some((c) => c.id === body.id)) {
+      return HttpResponse.json({ code: 'conflict', title: 'A capability with this id already exists.', status: 409 }, { status: 409 });
+    }
+    const known = new Set(rbacStore.permissions.map((p) => p.name));
+    const missing = body.requiredPermissions.filter((p) => !known.has(p));
+    if (missing.length > 0) {
+      return badRequest(`Unknown permission(s): ${missing.join(', ')}`);
+    }
+    rbacStore.capabilities.push({
+      id: body.id,
+      kind: body.kind,
+      mode: body.mode,
+      risk: body.risk,
+      resourceScoped: body.resourceScoped ?? false,
+      delegated: body.delegated ?? false,
+      enabled: true,
+      requiresApproval: body.requiresApproval ?? false,
+      isSystem: false,
+      requiredPermissions: [...body.requiredPermissions],
+    });
+    return writeResult();
+  }),
+  http.patch(`${API}/admin/capabilities/:id`, async ({ params, request }) => {
+    const capability = rbacStore.capabilities.find((c) => c.id === String(params.id));
+    if (!capability) return notFound('Capability not found.');
+    const body = (await request.json()) as {
+      enabled?: boolean;
+      risk?: 'low' | 'high';
+      requiresApproval?: boolean;
+      requiredPermissions?: string[];
+    };
+    if (body.requiredPermissions !== undefined) {
+      const known = new Set(rbacStore.permissions.map((p) => p.name));
+      const missing = body.requiredPermissions.filter((p) => !known.has(p));
+      if (missing.length > 0) return badRequest(`Unknown permission(s): ${missing.join(', ')}`);
+      capability.requiredPermissions = [...body.requiredPermissions];
+    }
+    if (body.enabled !== undefined) capability.enabled = body.enabled;
+    if (body.risk !== undefined) capability.risk = body.risk;
+    if (body.requiresApproval !== undefined) capability.requiresApproval = body.requiresApproval;
+    return writeResult();
+  }),
+  http.delete(`${API}/admin/capabilities/:id`, ({ params }) => {
+    const id = String(params.id);
+    const capability = rbacStore.capabilities.find((c) => c.id === id);
+    if (!capability) return notFound('Capability not found.');
+    if (capability.isSystem) {
+      return HttpResponse.json({ code: 'conflict', title: 'Built-in capabilities cannot be deleted.', status: 409 }, { status: 409 });
+    }
+    rbacStore.capabilities = rbacStore.capabilities.filter((c) => c.id !== id);
     return writeResult();
   }),
 

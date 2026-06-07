@@ -205,6 +205,58 @@ def test_agent_card_read_skill_is_routing_grade_from_catalog() -> None:
     assert "customers" in read["tags"]
 
 
+def test_well_known_card_is_rebuilt_per_request_from_live_catalog(monkeypatch) -> None:
+    # Native A2A: the served card is dynamic. With no injected catalog the agent
+    # re-derives it from the live MCP catalog on every discovery request, so a
+    # changed data surface is reflected without a restart.
+    import at_sql_analyser.server as server
+
+    # A mutable holder simulates the agent's data surface changing at runtime.
+    # "shipments" is NOT one of the static base keywords, so its presence in the
+    # tags proves the LIVE catalog (not the startup snapshot) drove the rebuild.
+    sales_view = {"schema": "mcp_read", "name": "sales", "ownerScoped": False, "columns": []}
+    shipments_view = {
+        "schema": "mcp_read",
+        "name": "shipments",
+        "ownerScoped": False,
+        "columns": [],
+    }
+    state: dict[str, list[dict[str, Any]]] = {"catalog": [sales_view]}
+    calls = {"n": 0}
+
+    def fake_fetch_catalog(**_kwargs: Any) -> list[dict[str, Any]]:
+        calls["n"] += 1
+        return list(state["catalog"])
+
+    monkeypatch.setattr(server, "fetch_catalog", fake_fetch_catalog)
+
+    app = create_app(
+        make_config(),
+        reasoner=FakeReasoner(queries=[read_query("SELECT 1 FROM mcp_read.sales")], answer="ok"),
+        snapshot_client=FakeSnapshotClient(make_snapshot()),
+        registry_client=FakeRegistryClient(),
+        resource_server=FakeResourceServer(),
+        data_client_factory=lambda _run_id: FakeDataClient(),
+        capability_client=FakeCapabilityClient(),
+        # No injected catalog -> the live (patched) fetch drives the served card.
+        catalog=None,
+    )
+    client = TestClient(app)
+
+    first = client.get("/.well-known/agent-card.json").json()
+    # The data surface changes between discovery requests.
+    state["catalog"] = [sales_view, shipments_view]
+    second = client.get("/.well-known/agent-card.json").json()
+
+    first_read = next(s for s in first["skills"] if s["id"] == "data.analyse.read")
+    second_read = next(s for s in second["skills"] if s["id"] == "data.analyse.read")
+    # The startup build consumes one fetch; each discovery GET consumes another.
+    assert calls["n"] >= 3
+    # View names become intent tags; the second request reflects the added view.
+    assert "shipments" not in first_read["tags"]
+    assert "shipments" in second_read["tags"]
+
+
 def test_read_task_completes() -> None:
     client, data, _ = build_client()
     res = send_task(client)

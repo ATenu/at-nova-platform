@@ -56,11 +56,14 @@ export interface PermissionDto {
   readonly isSystem?: boolean;
 }
 
+export type CapabilityKind = 'agent-skill' | 'mcp-tool';
+export type CapabilityMode = 'read' | 'write';
+
 /** A capability (agent skill / MCP tool) and its admin-editable policy. */
 export interface CapabilityDto {
   readonly id: string;
-  readonly kind: string;
-  readonly mode: string;
+  readonly kind: CapabilityKind;
+  readonly mode: CapabilityMode;
   readonly risk: 'low' | 'high';
   readonly resourceScoped: boolean;
   readonly delegated: boolean;
