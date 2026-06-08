@@ -120,7 +120,7 @@ def build_agent_card(
     """
     return AgentCard(
         name=AGENT_NAME,
-        description="Read-only SQL analyst over curated, PII-aware business views.",
+        description="SQL analyser agent is capable of converting user queries into SQL queries and executing them to retrieve infromation or wrote information related to customer sales, products or issues, in allignement with the corporate Standard Operating Procedures (SOPs).",
         version="0.1.0",
         url=cfg.public_url,
         # Streaming is on: sub-steps ride the SAME request connection as
