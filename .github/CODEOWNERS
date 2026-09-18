@@ -1,0 +1,4 @@
+# Default owner for all changes. With branch protection
+# "Require review from Code Owners" enabled on main, only @ATenu
+# can approve pull requests before they merge.
+* @ATenu
