@@ -258,3 +258,7 @@ deterministic security/write checks, and the per-scenario commentary:
 
 - [**Evaluation Results (commentary)** → `deliverables-documents/EVALUATION_RESULTS.md`](deliverables-documents/EVALUATION_RESULTS.md)
 - [**Full evaluation report (spreadsheet)** → `deliverables-documents/nova_agentic_quality_report_gpt.xlsx`](deliverables-documents/nova_agentic_quality_report_gpt.xlsx)
+
+## License
+
+Nova is open source software released under the [MIT License](LICENSE).
