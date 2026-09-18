@@ -622,7 +622,8 @@ services:
       start_period: 30s
 
   langfuse-minio:
-    image: minio/minio
+    # minio/minio was removed from Docker Hub; Quay is the remaining upstream mirror.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: nova-langfuse-minio
     entrypoint: sh
     # Create the 'langfuse' bucket before starting the server.
